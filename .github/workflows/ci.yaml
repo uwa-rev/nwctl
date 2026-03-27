@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, dev]
   pull_request:
     branches: [main, develop]
+  workflow_call:  # Allow reuse from release.yaml
 
 jobs:
   lint:
@@ -12,11 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install shellcheck
-        run: sudo apt-get install -y shellcheck
       - name: Run shellcheck on all scripts
         run: |
-          shellcheck -x nwctl check-env.sh env.sh fix-display.sh \
+          # Skip SC1091 (can't follow sourced files) and SC2034 (unused vars in env.sh)
+          shellcheck -x -e SC1091,SC2034 \
+            nwctl check-env.sh env.sh fix-display.sh \
             planning-sim.sh rosbag-replay.sh dev-shell.sh \
             test-manual.sh install.sh uninstall.sh
 
@@ -25,17 +26,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Verify all scripts are executable
         run: |
+          FAIL=0
           for f in nwctl check-env.sh fix-display.sh planning-sim.sh \
                    rosbag-replay.sh dev-shell.sh test-manual.sh \
                    install.sh uninstall.sh; do
             if [ ! -x "$f" ]; then
               echo "FAIL: $f is not executable"
-              exit 1
+              FAIL=1
             fi
           done
-          echo "All scripts are executable"
+          [ "$FAIL" -eq 0 ] && echo "All scripts are executable"
+          exit $FAIL
+
       - name: Verify start.sh symlink
         run: |
           if [ ! -L start.sh ] || [ "$(readlink start.sh)" != "nwctl" ]; then
@@ -43,11 +48,20 @@ jobs:
             exit 1
           fi
           echo "start.sh symlink OK"
-      - name: Test nwctl --help
-        run: |
-          # Mock env.sh dependencies for CI
-          mkdir -p /tmp/nwctl-test/workspaces
-          export USER_WORKSPACES_ROOT=/tmp/nwctl-test/workspaces
-          bash nwctl --help
+
       - name: Test nwctl version
         run: bash nwctl version
+
+      - name: Test nwctl --help
+        run: |
+          # nwctl --help sources env.sh which needs SCRIPT_DIR set correctly
+          # Since we're in the repo root, this should work
+          bash nwctl --help
+
+      - name: Test install and uninstall
+        run: |
+          sudo bash install.sh
+          which nwctl
+          nwctl version
+          sudo bash uninstall.sh
+          ! which nwctl 2>/dev/null && echo "Uninstall OK"

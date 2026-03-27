@@ -9,11 +9,19 @@ permissions:
   contents: write
 
 jobs:
+  # Run CI checks before release
+  ci:
+    name: CI Check
+    uses: ./.github/workflows/ci.yaml
+
   release:
     name: Create Release
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for changelog
 
       - name: Extract version from tag
         id: version
@@ -32,26 +40,27 @@ jobs:
       - name: Create tarball
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          tar czf "nwctl-${VERSION}.tar.gz" \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='users.conf' \
-            --exclude='workspaces' \
-            -C .. nwctl/
+          # Create a clean directory for packaging
+          mkdir -p /tmp/nwctl
+          cp -r nwctl check-env.sh dev-shell.sh env.sh fix-display.sh \
+                install.sh planning-sim.sh rosbag-replay.sh start.sh \
+                test-manual.sh uninstall.sh README.md /tmp/nwctl/
+          tar czf "nwctl-${VERSION}.tar.gz" -C /tmp nwctl/
 
       - name: Generate changelog
         id: changelog
         run: |
-          # Get commits since last tag
-          PREV_TAG=$(git tag --sort=-version:refname | head -2 | tail -1)
+          PREV_TAG=$(git tag --sort=-version:refname | sed -n '2p')
           if [ -n "${PREV_TAG}" ]; then
             CHANGES=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges)
           else
             CHANGES=$(git log --pretty=format:"- %s" --no-merges)
           fi
-          echo "changes<<EOF" >> "$GITHUB_OUTPUT"
-          echo "${CHANGES}" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "changes<<EOF"
+            echo "${CHANGES}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -65,8 +74,22 @@ jobs:
 
             ### Installation
             ```bash
+            # Download and extract
             tar xzf nwctl-${{ steps.version.outputs.version }}.tar.gz
             cd nwctl
+
+            # Install to PATH (creates symlink in /usr/local/bin)
             sudo bash install.sh
+
+            # Verify
+            nwctl version
+            ```
+
+            ### Quick Start
+            ```bash
+            nwctl register <username> --src /path/to/your/autoware/src
+            nwctl <username> planning-sim
+            nwctl <username> rosbag-replay
+            nwctl <username> shell
             ```
           files: "nwctl-${{ steps.version.outputs.version }}.tar.gz"
