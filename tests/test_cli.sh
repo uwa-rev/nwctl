@@ -119,7 +119,7 @@ assert_contains "${ENTRY_COPY}" "perception:=false"
 assert_contains "${ENTRY_COPY}" "launch_perception:=false"
 assert_contains "${ENTRY_COPY}" "use_cuda_ground_segmentation:=false"
 assert_contains "${ENTRY_COPY}" "cuda_ground_segmentation_node_param_path:=/opt/autoware/autoware_ground_segmentation/share/autoware_ground_segmentation/config/scan_ground_filter.param.yaml"
-assert_contains "${ENTRY_COPY}" 'kill -0 "${launch_pid}"'
+assert_contains "${ENTRY_COPY}" "kill -0 \"\${launch_pid}\""
 
 # TERM/SSH-style interruption stops and removes the managed container.
 : > "${DOCKER_LOG}"
