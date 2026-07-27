@@ -12,7 +12,7 @@
 #   nwctl <username> stop                       Stop user's containers
 #   nwctl version                               Show version
 # ============================================================
-NWCTL_VERSION="0.1.2"
+NWCTL_VERSION="0.2.2"
 set -euo pipefail
 
 # Resolve SCRIPT_DIR: follow symlink if nwctl is installed via symlink
@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
 # Handle commands that don't need env.sh early
 case "${1:-}" in
     version|-v|--version) echo "nwctl v${NWCTL_VERSION}"; exit 0 ;;
-    -h|--help) ;; # fall through to load env.sh and print full help
+    help|-h|--help) ;; # fall through to load env.sh and print full help
 esac
 
 source "${SCRIPT_DIR}/env.sh"
@@ -40,7 +40,15 @@ NC='\033[0m'
 
 # ---- Init (only create dirs when needed, skip for read-only commands) ----
 init_workspace() {
-    mkdir -p "${USER_WORKSPACES_ROOT}"
+    mkdir -p "${USER_WORKSPACES_ROOT}" "$(dirname "${USER_REGISTRY}")"
+    chmod g+rwx "${USER_WORKSPACES_ROOT}" 2>/dev/null || true
+
+    # One-time, non-destructive migration from releases <= 0.1.x.
+    if [ ! -e "${USER_REGISTRY}" ] && [ -s "${SCRIPT_DIR}/users.conf" ] &&
+       [ "${USER_REGISTRY}" != "${SCRIPT_DIR}/users.conf" ]; then
+        cp -p "${SCRIPT_DIR}/users.conf" "${USER_REGISTRY}"
+        echo -e "${YELLOW}Migrated legacy registry to ${USER_REGISTRY}${NC}" >&2
+    fi
     touch "${USER_REGISTRY}"
 }
 
@@ -67,7 +75,7 @@ get_domain_id() {
 
 get_src_path() {
     local username="$1"
-    grep "^${username}:" "${USER_REGISTRY}" | cut -d: -f3
+    grep "^${username}:" "${USER_REGISTRY}" | cut -d: -f3-
 }
 
 # Reserved DOMAIN_IDs (production use, cannot be assigned)
@@ -78,33 +86,30 @@ DOMAIN_ID_START=10
 
 next_domain_id() {
     local candidate
-    if [ ! -s "${USER_REGISTRY}" ]; then
-        candidate=${DOMAIN_ID_START}
-    else
-        local max_id
-        max_id=$(cut -d: -f2 "${USER_REGISTRY}" | sort -n | tail -1)
-        candidate=$((max_id + 1))
-    fi
-    # Skip reserved IDs
-    while echo "${RESERVED_DOMAIN_IDS}" | grep -qw "${candidate}"; do
-        candidate=$((candidate + 1))
+    for ((candidate=DOMAIN_ID_START; candidate<=232; candidate++)); do
+        echo "${RESERVED_DOMAIN_IDS}" | grep -qw "${candidate}" && continue
+        cut -d: -f2 "${USER_REGISTRY}" 2>/dev/null | grep -qx "${candidate}" && continue
+        echo "${candidate}"
+        return 0
     done
-    # ROS_DOMAIN_ID valid range: 0-232
-    if [ "${candidate}" -gt 232 ]; then
-        echo -e "${RED}No available DOMAIN_IDs (max 232)${NC}" >&2
-        return 1
-    fi
-    echo "${candidate}"
+    echo -e "${RED}No available DOMAIN_IDs (max 232)${NC}" >&2
+    return 1
+}
+
+validate_username() {
+    local username="$1"
+    [[ "${username}" =~ ^[a-zA-Z0-9_-]+$ ]]
 }
 
 # Register a new user
-# Usage: register_user <username> <src_path>
+# Usage: register_user <username> <src_path> [domain_id]
 register_user() {
     local username="$1"
     local src_path="${2:-}"
+    local requested_domain_id="${3:-}"
 
     # Validate username: only alphanumeric, underscore, hyphen
-    if [[ ! "${username}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    if ! validate_username "${username}"; then
         echo -e "${RED}Invalid username '${username}'. Only letters, numbers, underscore, and hyphen are allowed.${NC}"
         return 1
     fi
@@ -144,14 +149,36 @@ register_user() {
         echo -e "${RED}Source path does not exist: ${src_path}${NC}"
         return 1
     fi
+    if [[ "${src_path}" == *$'\n'* ]]; then
+        echo -e "${RED}Source path must not contain a newline${NC}"
+        return 1
+    fi
 
     # Assign DOMAIN_ID
     local domain_id
-    domain_id=$(next_domain_id)
+    if [ -n "${requested_domain_id}" ]; then
+        if ! [[ "${requested_domain_id}" =~ ^[0-9]+$ ]] ||
+           [ "${requested_domain_id}" -gt 232 ]; then
+            echo -e "${RED}Invalid DOMAIN_ID '${requested_domain_id}' (expected 0-232)${NC}"
+            return 1
+        fi
+        if echo "${RESERVED_DOMAIN_IDS}" | grep -qw "${requested_domain_id}"; then
+            echo -e "${RED}DOMAIN_ID ${requested_domain_id} is reserved${NC}"
+            return 1
+        fi
+        if cut -d: -f2 "${USER_REGISTRY}" | grep -qx "${requested_domain_id}"; then
+            echo -e "${RED}DOMAIN_ID ${requested_domain_id} is already assigned${NC}"
+            return 1
+        fi
+        domain_id="${requested_domain_id}"
+    else
+        domain_id=$(next_domain_id)
+    fi
 
     # Create user workspace (build/install/log only)
     local user_ws="${USER_WORKSPACES_ROOT}/${username}"
     mkdir -p "${user_ws}/build" "${user_ws}/install" "${user_ws}/log"
+    chmod -R g+rwX "${user_ws}" 2>/dev/null || true
 
     # Write to registry: username:domain_id:src_path
     echo "${username}:${domain_id}:${src_path}" >> "${USER_REGISTRY}"
@@ -187,7 +214,7 @@ list_users() {
     echo "--------------------------------------------------------------------------"
     while IFS=: read -r name did src; do
         local status="stopped"
-        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^aw-${name}-"; then
+        if docker ps --filter "label=io.nwctl.user=${name}" --format '{{.Names}}' 2>/dev/null | grep -q .; then
             status="${GREEN}running${NC}"
         fi
         printf "%-12s %-10s " "${name}" "${did}"
@@ -203,7 +230,7 @@ show_status() {
     echo ""
     echo -e "${GREEN}Running Autoware Containers:${NC}"
     echo "--------------------------------------------"
-    docker ps --filter "name=aw-" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" 2>/dev/null
+    docker ps --filter "label=io.nwctl.managed=true" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" 2>/dev/null
     echo "--------------------------------------------"
     echo ""
 }
@@ -221,7 +248,7 @@ unregister_user() {
     fi
 
     # Refuse if user has running containers
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^aw-${username}-"; then
+    if docker ps --filter "label=io.nwctl.user=${username}" --format '{{.Names}}' 2>/dev/null | grep -q .; then
         echo -e "${RED}User '${username}' has running containers. Stop them first:${NC}"
         echo "  nwctl ${username} stop"
         return 1
@@ -262,10 +289,10 @@ unregister_user() {
 # Stop user's containers
 stop_user() {
     local username="$1"
-    local containers
-    containers=$(docker ps -q --filter "name=aw-${username}-" 2>/dev/null)
-    if [ -n "${containers}" ]; then
-        docker stop "${containers}"
+    local -a containers=()
+    mapfile -t containers < <(docker ps -q --filter "label=io.nwctl.user=${username}" 2>/dev/null)
+    if [ "${#containers[@]}" -gt 0 ]; then
+        docker stop "${containers[@]}"
         echo -e "${GREEN}Stopped all containers for '${username}'${NC}"
     else
         echo -e "${YELLOW}No running containers for '${username}'${NC}"
@@ -282,7 +309,7 @@ cleanup_orphans() {
 
     # 1. Exited nwctl containers
     local exited_containers
-    exited_containers=$(docker ps -a --filter "name=aw-" --filter "status=exited" --format "{{.Names}}" 2>/dev/null)
+    exited_containers=$(docker ps -a --filter "label=io.nwctl.managed=true" --filter "status=exited" --format "{{.Names}}" 2>/dev/null)
     if [ -n "${exited_containers}" ]; then
         echo -e "${YELLOW}Exited containers:${NC}"
         echo "${exited_containers}" | awk '{print "  "$0}'
@@ -300,13 +327,9 @@ cleanup_orphans() {
         echo "Stale temp files:   (none)"
     fi
 
-    # 3. Stale lock files
-    local lock_files=""
-    [ -f "${USER_REGISTRY}.lock" ] && lock_files="${USER_REGISTRY}.lock"
-
     echo "--------------------------------------------"
 
-    if [ -z "${exited_containers}" ] && [ "${temp_count:-0}" -eq 0 ] && [ -z "${lock_files}" ]; then
+    if [ -z "${exited_containers}" ] && [ "${temp_count:-0}" -eq 0 ]; then
         echo -e "${GREEN}Nothing to clean up${NC}"
         return 0
     fi
@@ -334,9 +357,6 @@ cleanup_orphans() {
         find /tmp -maxdepth 1 -name 'aw-entry-*.sh' -mtime +0 -delete 2>/dev/null
     fi
 
-    # Remove stale lock
-    [ -n "${lock_files}" ] && rm -f "${lock_files}"
-
     echo -e "${GREEN}Cleanup complete${NC}"
 }
 
@@ -357,7 +377,8 @@ clean_user() {
     echo -e "Will clean ${username}'s build cache: build(${build_size}) + install(${install_size})"
     read -rp "Confirm? [y/N] " confirm
     if [[ "${confirm}" =~ ^[Yy]$ ]]; then
-        rm -rf "${user_ws}/build/"* "${user_ws}/install/"* "${user_ws}/log/"*
+        find "${user_ws}/build" "${user_ws}/install" "${user_ws}/log" \
+            -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
         echo -e "${GREEN}Cleaned${NC}"
     else
         echo "Cancelled"
@@ -397,13 +418,15 @@ print_help() {
     echo -e "${GREEN}nwctl${NC} - Nuway Autoware Container Manager (v${NWCTL_VERSION})"
     echo ""
     echo "Usage:"
-    echo "  nwctl register <username> --src <src_path>  Register new user"
+    echo "  nwctl register <username> --src <src_path> [--domain-id <0-232>]"
     echo "  nwctl update <username> --src <new_path>    Update user source path"
     echo "  nwctl unregister <username> [--keep-workspace]  Remove user"
     echo "  nwctl list                                  List all users"
     echo "  nwctl status                                Show running containers"
     echo "  nwctl disk                                  Show disk usage"
     echo "  nwctl cleanup [--dry-run]                   Clean orphan containers & temp files"
+    echo "  nwctl pull [--profile <auto|cpu|nvidia>]    Pull the selected image"
+    echo "  nwctl completion <bash|zsh>                 Print shell completion setup"
     echo "  nwctl <username> shell                      Enter dev shell"
     echo "  nwctl <username> planning-sim               Planning simulation"
     echo "  nwctl <username> rosbag-replay              Rosbag replay"
@@ -417,6 +440,7 @@ print_help() {
     echo "  --rosbag-path <path>    Override rosbag path"
     echo "  --bag <name>            Specify bag subdirectory"
     echo "  --rate <float>          Playback rate (default: 1.0)"
+    echo "  --profile <profile>     Runtime profile: auto, cpu, or nvidia"
     echo ""
     echo "Examples:"
     echo "  nwctl register zhangsan --src ~/zhangsan_autoware/src"
@@ -427,6 +451,42 @@ print_help() {
     echo ""
 }
 
+print_completion_setup() {
+    local shell_name="${1:-}"
+    case "${shell_name}" in
+        bash)
+            echo "source \"${SCRIPT_DIR}/completions/nwctl.bash\""
+            ;;
+        zsh)
+            echo "fpath=(\"${SCRIPT_DIR}/completions\" \$fpath)"
+            echo "autoload -Uz compinit && compinit"
+            ;;
+        *)
+            echo -e "${RED}Usage: nwctl completion <bash|zsh>${NC}" >&2
+            return 1
+            ;;
+    esac
+}
+
+complete_users() {
+    if [ -r "${USER_REGISTRY}" ]; then
+        cut -d: -f1 "${USER_REGISTRY}"
+    elif [ -r "${SCRIPT_DIR}/users.conf" ]; then
+        cut -d: -f1 "${SCRIPT_DIR}/users.conf"
+    fi
+}
+
+update_user_source() {
+    local username="$1" new_src="$2" tmp
+    tmp=$(mktemp "$(dirname "${USER_REGISTRY}")/.users.conf.XXXXXX")
+    awk -F: -v user="${username}" -v src="${new_src}" '
+        $1 == user { print $1 ":" $2 ":" src; next }
+        { print }
+    ' "${USER_REGISTRY}" > "${tmp}"
+    chmod --reference="${USER_REGISTRY}" "${tmp}" 2>/dev/null || true
+    mv "${tmp}" "${USER_REGISTRY}"
+}
+
 # Show help if no args
 if [ $# -lt 1 ]; then
     print_help
@@ -435,7 +495,7 @@ fi
 
 # Handle read-only commands (no workspace init needed)
 case "${1:-}" in
-    -h|--help)
+    help|-h|--help)
         print_help
         exit 0
         ;;
@@ -444,7 +504,28 @@ case "${1:-}" in
         exit 0
         ;;
     check-env)
-        bash "${SCRIPT_DIR}/check-env.sh" "${2:-all}"
+        CHECK_MODE="${2:-all}"
+        CHECK_PROFILE="${NWCTL_PROFILE}"
+        if [ "${CHECK_MODE}" = "--profile" ]; then
+            CHECK_MODE=all
+            [ $# -ge 3 ] || { echo -e "${RED}Missing value for --profile${NC}"; exit 1; }
+            CHECK_PROFILE="$3"
+        elif [ "${3:-}" = "--profile" ]; then
+            [ $# -ge 4 ] || { echo -e "${RED}Missing value for --profile${NC}"; exit 1; }
+            CHECK_PROFILE="$4"
+        elif [ $# -gt 2 ]; then
+            echo -e "${RED}Usage: nwctl check-env [mode] [--profile <auto|cpu|nvidia>]${NC}"
+            exit 1
+        fi
+        bash "${SCRIPT_DIR}/check-env.sh" "${CHECK_MODE}" "${CHECK_PROFILE}"
+        exit 0
+        ;;
+    completion)
+        print_completion_setup "${2:-}"
+        exit $?
+        ;;
+    _complete)
+        [ "${2:-}" = "users" ] && complete_users
         exit 0
         ;;
 esac
@@ -456,14 +537,15 @@ init_workspace
 case "$1" in
     register)
         [ $# -lt 2 ] && { echo -e "${RED}Usage: nwctl register <username> --src <src_path>${NC}"; exit 1; }
-        REG_USER="$2"; shift 2; REG_SRC=""
+        REG_USER="$2"; shift 2; REG_SRC=""; REG_DOMAIN_ID=""
         while [[ $# -gt 0 ]]; do
             case $1 in
                 --src) [ $# -ge 2 ] || { echo -e "${RED}Missing value for --src${NC}"; exit 1; }; REG_SRC="$2"; shift 2 ;;
+                --domain-id) [ $# -ge 2 ] || { echo -e "${RED}Missing value for --domain-id${NC}"; exit 1; }; REG_DOMAIN_ID="$2"; shift 2 ;;
                 *) echo "Unknown option: $1"; exit 1 ;;
             esac
         done
-        with_registry_lock register_user "${REG_USER}" "${REG_SRC}"
+        with_registry_lock register_user "${REG_USER}" "${REG_SRC}" "${REG_DOMAIN_ID}"
         exit 0
         ;;
     update)
@@ -471,12 +553,15 @@ case "$1" in
         UPD_USER="$2"; shift 2; UPD_SRC=""
         while [[ $# -gt 0 ]]; do
             case $1 in
-                --src) UPD_SRC="$2"; shift 2 ;;
+                --src) [ $# -ge 2 ] || { echo -e "${RED}Missing value for --src${NC}"; exit 1; }; UPD_SRC="$2"; shift 2 ;;
                 *) echo "Unknown option: $1"; exit 1 ;;
             esac
         done
         if [ -z "${UPD_SRC}" ]; then
             echo -e "${RED}Usage: nwctl update ${UPD_USER} --src <new_path>${NC}"; exit 1
+        fi
+        if ! validate_username "${UPD_USER}"; then
+            echo -e "${RED}Invalid username '${UPD_USER}'${NC}"; exit 1
         fi
         UPD_SRC=$(realpath "${UPD_SRC}" 2>/dev/null || echo "${UPD_SRC}")
         if [ ! -d "${UPD_SRC}" ]; then
@@ -485,13 +570,17 @@ case "$1" in
         if ! grep -q "^${UPD_USER}:" "${USER_REGISTRY}"; then
             echo -e "${RED}User '${UPD_USER}' is not registered${NC}"; exit 1
         fi
-        with_registry_lock sed -i "s|^${UPD_USER}:[^:]*:.*|${UPD_USER}:$(get_domain_id "${UPD_USER}"):${UPD_SRC}|" "${USER_REGISTRY}"
+        [[ "${UPD_SRC}" == *$'\n'* ]] && { echo -e "${RED}Source path must not contain a newline${NC}"; exit 1; }
+        with_registry_lock update_user_source "${UPD_USER}" "${UPD_SRC}"
         echo -e "${GREEN}Updated source path for '${UPD_USER}': ${UPD_SRC}${NC}"
         exit 0
         ;;
     unregister)
         [ $# -lt 2 ] && { echo -e "${RED}Usage: nwctl unregister <username> [--keep-workspace]${NC}"; exit 1; }
         UNR_USER="$2"; shift 2
+        if ! validate_username "${UNR_USER}"; then
+            echo -e "${RED}Invalid username '${UNR_USER}'${NC}"; exit 1
+        fi
         UNR_KEEP=""
         while [[ $# -gt 0 ]]; do
             case $1 in
@@ -518,11 +607,31 @@ case "$1" in
         cleanup_orphans "${2:-}"
         exit 0
         ;;
+    pull)
+        PULL_PROFILE="${NWCTL_PROFILE}"
+        if [ "${2:-}" = "--profile" ]; then
+            [ $# -ge 3 ] || { echo -e "${RED}Missing value for --profile${NC}"; exit 1; }
+            PULL_PROFILE="$3"
+        elif [ $# -gt 1 ]; then
+            echo -e "${RED}Usage: nwctl pull [--profile <auto|cpu|nvidia>]${NC}"
+            exit 1
+        fi
+        nwctl_resolve_profile "${PULL_PROFILE}"
+        echo "Profile: ${NWCTL_ACTIVE_PROFILE}"
+        echo "Image:   ${AUTOWARE_IMAGE}"
+        docker pull "${AUTOWARE_IMAGE}"
+        exit 0
+        ;;
 esac
 
 # ---- User commands ----
 USERNAME="$1"
 shift
+
+if ! validate_username "${USERNAME}"; then
+    echo -e "${RED}Invalid username '${USERNAME}'${NC}"
+    exit 1
+fi
 
 # Verify user is registered
 DOMAIN_ID=$(get_domain_id "${USERNAME}")
@@ -552,20 +661,61 @@ MAP_NAME="${DEFAULT_MAP_NAME}"
 ROSBAG_PATH="${SHARED_ROSBAG_PATH}"
 PLAY_RATE="1.0"
 ROSBAG_FILE=""
+RUNTIME_PROFILE="${NWCTL_PROFILE}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --map-name) MAP_NAME="$2"; shift 2 ;;
-        --rosbag-path) ROSBAG_PATH="$2"; shift 2 ;;
-        --bag) ROSBAG_FILE="$2"; shift 2 ;;
-        --rate) PLAY_RATE="$2"; shift 2 ;;
+        --map-name|--rosbag-path|--bag|--rate|--profile)
+            [ $# -ge 2 ] || { echo -e "${RED}Missing value for $1${NC}"; exit 1; }
+            case $1 in
+                --map-name) MAP_NAME="$2" ;;
+                --rosbag-path) ROSBAG_PATH="$2" ;;
+                --bag) ROSBAG_FILE="$2" ;;
+                --rate) PLAY_RATE="$2" ;;
+                --profile) RUNTIME_PROFILE="$2" ;;
+            esac
+            shift 2
+            ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
+nwctl_resolve_profile "${RUNTIME_PROFILE}"
+
+if ! [[ "${PLAY_RATE}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+   ! awk -v rate="${PLAY_RATE}" 'BEGIN { exit !(rate > 0) }'; then
+    echo -e "${RED}Invalid --rate '${PLAY_RATE}': expected a number greater than zero${NC}"
+    exit 1
+fi
+
+if ! [[ "${MAP_NAME}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo -e "${RED}Invalid --map-name '${MAP_NAME}': expected a map directory name${NC}"
+    exit 1
+fi
+
+for model_name in "${VEHICLE_MODEL}" "${SENSOR_MODEL}"; do
+    if ! [[ "${model_name}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        echo -e "${RED}Invalid vehicle/sensor model name '${model_name}'${NC}"
+        exit 1
+    fi
+done
+
+if [ -n "${ROSBAG_FILE}" ]; then
+    rosbag_base=$(realpath -e "${ROSBAG_PATH}" 2>/dev/null || true)
+    rosbag_selected=$(realpath -e "${ROSBAG_PATH%/}/${ROSBAG_FILE}" 2>/dev/null || true)
+    if [ -z "${rosbag_base}" ] || [ -z "${rosbag_selected}" ] ||
+       [[ "${rosbag_selected}/" != "${rosbag_base}/"* ]]; then
+        echo -e "${RED}Invalid --bag '${ROSBAG_FILE}': expected a subdirectory of ${ROSBAG_PATH}${NC}"
+        exit 1
+    fi
+    ROSBAG_PATH="${rosbag_selected}"
+fi
+
 # ---- User workspace ----
 USER_WS="${USER_WORKSPACES_ROOT}/${USERNAME}"
 CONTAINER_NAME="aw-${USERNAME}-${MODE}"
+mkdir -p "${USER_WS}/build" "${USER_WS}/install" "${USER_WS}/log"
+chmod -R g+rwX "${USER_WS}" 2>/dev/null || true
 
 # Get user's source path from registry
 USER_SRC_PATH=$(get_src_path "${USERNAME}")
@@ -578,9 +728,24 @@ fi
 # shell mode: mount user's workspace; other modes: use prebuilt image only
 if [ "${MODE}" = "shell" ]; then
     USER_WORKSPACE_ROOT="$(dirname "${USER_SRC_PATH}")"
-    SRC_MOUNT=(-v "${USER_WORKSPACE_ROOT}:/workspace")
+    SRC_MOUNT=(
+        -v "${USER_WORKSPACE_ROOT}:/workspace"
+        -v "${USER_WS}/build:/workspace/build"
+        -v "${USER_WS}/install:/workspace/install"
+        -v "${USER_WS}/log:/workspace/log"
+    )
 else
     SRC_MOUNT=()
+fi
+
+if [ ! -d "${SHARED_MAP_PATH}/${MAP_NAME}" ]; then
+    echo -e "${RED}Map directory does not exist: ${SHARED_MAP_PATH}/${MAP_NAME}${NC}"
+    exit 1
+fi
+
+if [ "${MODE}" = "rosbag-replay" ] && [ ! -d "${ROSBAG_PATH}" ]; then
+    echo -e "${RED}Rosbag directory does not exist: ${ROSBAG_PATH}${NC}"
+    exit 1
 fi
 
 # ---- Detect DISPLAY ----
@@ -602,18 +767,58 @@ if [ -z "${XAUTHORITY:-}" ]; then
     fi
 fi
 
-xhost +local:docker 2>/dev/null || true
-
 # ---- Check if container is already running ----
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+if docker ps --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -qx "${CONTAINER_NAME}"; then
     echo -e "${YELLOW}Container '${CONTAINER_NAME}' is already running. Attaching...${NC}"
-    exec docker exec -it "${CONTAINER_NAME}" /bin/bash
+    docker exec -it "${CONTAINER_NAME}" /bin/bash
+    exit $?
+fi
+
+XHOST_GRANTED=0
+DISPLAY_ARGS=(-e "DISPLAY=${DISPLAY}" -v /tmp/.X11-unix:/tmp/.X11-unix)
+if [ -n "${XAUTHORITY:-}" ] && [ -r "${XAUTHORITY}" ]; then
+    DISPLAY_ARGS+=(
+        -e XAUTHORITY=/tmp/.nwctl.Xauthority
+        -v "${XAUTHORITY}:/tmp/.nwctl.Xauthority:ro"
+    )
+else
+    echo -e "${YELLOW}No readable Xauthority file; using temporary local Docker X11 access${NC}"
+    if xhost +local:docker >/dev/null 2>&1; then
+        XHOST_GRANTED=1
+    fi
 fi
 
 # ---- Generate container entry script ----
 ENTRYPOINT_SCRIPT=$(mktemp /tmp/aw-entry-XXXXXX.sh)
-# Clean up temp file on exit (note: exec replaces process, so also clean before exec)
-trap 'rm -f '"${ENTRYPOINT_SCRIPT}" EXIT
+CONTAINER_OWNED=0
+cleanup_container() {
+    if [ "${CONTAINER_OWNED:-0}" -ne 1 ]; then
+        return
+    fi
+
+    # Only clean up the exact container created by this invocation.
+    if [ "$(docker inspect --format '{{index .Config.Labels "io.nwctl.managed"}}' \
+            "${CONTAINER_NAME}" 2>/dev/null || true)" = "true" ]; then
+        docker stop -t "${NWCTL_STOP_TIMEOUT:-10}" "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+        docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    fi
+}
+cleanup_runtime() {
+    cleanup_container
+    rm -f "${ENTRYPOINT_SCRIPT:-}"
+    if [ "${XHOST_GRANTED:-0}" -eq 1 ]; then
+        xhost -local:docker >/dev/null 2>&1 || true
+    fi
+}
+handle_runtime_signal() {
+    local status="$1"
+    trap - INT TERM
+    cleanup_runtime
+    exit "${status}"
+}
+trap cleanup_runtime EXIT
+trap 'handle_runtime_signal 130' INT
+trap 'handle_runtime_signal 143' TERM
 
 case "${MODE}" in
     shell)
@@ -664,6 +869,15 @@ ros2 launch autoware_launch planning_simulator.launch.xml \
 ENTRY_EOF
         ;;
     rosbag-replay)
+        ROSBAG_CPU_LAUNCH_ARGS=""
+        ROSBAG_START_DELAY="${NWCTL_ROSBAG_START_DELAY:-30}"
+        if [ "${NWCTL_ACTIVE_PROFILE}" = "cpu" ]; then
+            # The upstream launch file declares a CUDA parameter path even when
+            # CUDA is disabled. Point it at an existing CPU YAML so the no-GPU
+            # image does not try to resolve the absent CUDA package.
+            ROSBAG_CPU_LAUNCH_ARGS="perception:=false launch_perception:=false use_cuda_ground_segmentation:=false cuda_ground_segmentation_node_param_path:=/opt/autoware/autoware_ground_segmentation/share/autoware_ground_segmentation/config/scan_ground_filter.param.yaml"
+            ROSBAG_START_DELAY="${NWCTL_ROSBAG_START_DELAY:-60}"
+        fi
         cat > "${ENTRYPOINT_SCRIPT}" << ENTRY_EOF
 #!/bin/bash
 sudo chown -R \$(id -u):\$(id -g) \$HOME 2>/dev/null || true
@@ -677,7 +891,18 @@ source /opt/autoware/setup.bash
 ros2 launch autoware_launch logging_simulator.launch.xml \
     map_path:=/autoware_map/${MAP_NAME} \
     vehicle_model:=${VEHICLE_MODEL} \
-    sensor_model:=${SENSOR_MODEL}
+    sensor_model:=${SENSOR_MODEL} \
+    ${ROSBAG_CPU_LAUNCH_ARGS} &
+launch_pid=\$!
+trap 'kill "\${launch_pid}" 2>/dev/null || true' EXIT
+sleep "${ROSBAG_START_DELAY}"
+if ! kill -0 "\${launch_pid}" 2>/dev/null; then
+    echo "Autoware logging simulator exited before rosbag playback" >&2
+    wait "\${launch_pid}"
+    exit \$?
+fi
+ros2 bag play /rosbag_data -r ${PLAY_RATE}
+wait "\${launch_pid}"
 ENTRY_EOF
         ;;
     *)
@@ -696,6 +921,7 @@ echo -e "================================================${NC}"
 echo -e " User:       ${CYAN}${USERNAME}${NC} (DOMAIN_ID=${DOMAIN_ID})"
 echo -e " Container:  ${CONTAINER_NAME}"
 echo -e " Image:      ${AUTOWARE_IMAGE}"
+echo -e " Profile:    ${NWCTL_ACTIVE_PROFILE}"
 if [ "${MODE}" = "shell" ]; then
     echo -e " Workspace:  $(dirname "${USER_SRC_PATH}") -> /workspace"
 fi
@@ -746,23 +972,39 @@ fi
 
 # ---- Launch container ----
 # Use docker run without exec so trap can clean up temp file
+RUNTIME_ARGS=()
+if [ "${NWCTL_ACTIVE_PROFILE}" = "nvidia" ]; then
+    RUNTIME_ARGS+=(
+        --runtime="${NWCTL_NVIDIA_RUNTIME}"
+        -e NVIDIA_DRIVER_CAPABILITIES=all
+    )
+else
+    RUNTIME_ARGS+=(
+        -e LIBGL_ALWAYS_SOFTWARE=1
+        -e GALLIUM_DRIVER=llvmpipe
+    )
+fi
+
+CONTAINER_OWNED=1
 docker run -it --rm \
     --name "${CONTAINER_NAME}" \
-    --net=host \
-    --ipc=host \
-    --runtime=nvidia \
-    -e NVIDIA_DRIVER_CAPABILITIES=all \
-    -e DISPLAY="${DISPLAY}" \
-    -e XAUTHORITY="${XAUTHORITY:-}" \
+    --label io.nwctl.managed=true \
+    --label "io.nwctl.user=${USERNAME}" \
+    --label "io.nwctl.mode=${MODE}" \
+    --network="${NWCTL_NETWORK_MODE}" \
+    --ipc="${NWCTL_IPC_MODE}" \
+    --cap-add=NET_ADMIN \
+    "${RUNTIME_ARGS[@]}" \
+    "${DISPLAY_ARGS[@]}" \
     -e XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
     -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+    -e CYCLONEDDS_URI="${NWCTL_CYCLONEDDS_URI}" \
     -e ROS_DOMAIN_ID="${DOMAIN_ID}" \
     -e TZ="$(cat /etc/timezone 2>/dev/null || echo UTC)" \
     -e LOCAL_UID="$(id -u)" \
     -e LOCAL_GID="$(id -g)" \
     -e LOCAL_USER="$(id -un)" \
     -e LOCAL_GROUP="$(id -gn)" \
-    -v /tmp/.X11-unix:/tmp/.X11-unix \
     "${SRC_MOUNT[@]+"${SRC_MOUNT[@]}"}" \
     -v "${SHARED_MAP_PATH}":/autoware_map:ro \
     -v "${SHARED_DATA_PATH}":/autoware_data:ro \

@@ -6,18 +6,16 @@ Multi-user development and testing toolkit for Autoware. Multiple team members c
 
 ```
 Host Machine
-├── ~/zhangsan_aw/           User A's git clone (independent)
-│   ├── src/                        User A's source code & branches
-│   ├── build/                      User A's build artifacts
-│   └── install/                    User A's install
-├── ~/lisi_aw/              User B's git clone (independent)
-│   ├── src/
-│   ├── build/
-│   └── install/
+├── ~/zhangsan_aw/           User A's git clone (source only)
+│   └── src/                        User A's source code & branches
+├── ~/lisi_aw/               User B's git clone (source only)
+│   └── src/
+├── /var/lib/nwctl/          Shared runtime state
+│   ├── users.conf                  User and ROS domain registry
+│   └── workspaces/<user>/          Isolated build/install/log output
 ├── ~/autoware_map/          Shared map data (read-only)
 ├── ~/autoware_data/         Shared model data (read-only)
-└── nwctl/
-    └── nwctl                        CLI tool (install to PATH via install.sh)
+└── /opt/nwctl/              Installed program files
 
 Inside Docker Container
 ├── /workspace/                     Mounted from user's git clone (shell mode)
@@ -36,7 +34,7 @@ Inside Docker Container
 |----------|--------|---------|
 | ROS topics | ROS_DOMAIN_ID | Auto-assigned per user, fully isolated |
 | Source code | Separate git clones | Each user manages their own repo & branches |
-| Build artifacts | Separate directories | In each user's own workspace |
+| Build artifacts | Separate mounts | `/var/lib/nwctl/workspaces/<user>/` |
 | Containers | Named per user | `aw-zhangsan-shell`, `aw-lisi-rosbag-replay` |
 | Map / Data | Shared read-only | Saves disk space |
 | GPU | Shared | NVIDIA runtime supports multi-container |
@@ -53,20 +51,34 @@ Inside Docker Container
 | Item | Requirement |
 |------|-------------|
 | OS | Ubuntu 22.04 (x86_64 or arm64) |
-| GPU | NVIDIA (driver >= 525) |
+| GPU | Optional; NVIDIA uses the `nvidia` profile, no-GPU hosts use `cpu` |
 | Docker | >= 24.0 |
 | nvidia-container-toolkit | Installed |
 | RAM | >= 16GB (64GB recommended for multi-user) |
 
 ## Quick Start
 
-### 1. Pull Docker Image (admin, one-time)
+### 1. Install (admin, one-time)
 
 ```bash
-docker pull ghcr.io/autowarefoundation/autoware:universe-devel-cuda
+sudo bash install.sh
 ```
 
-### 2. Clone Your Own Code
+This installs the program under `/opt/nwctl`, creates shared state under
+`/var/lib/nwctl`, and installs Bash and Zsh completion. Start a new shell after
+installation, then press Tab after `nwctl`.
+
+### 2. Pull Docker Image (admin, one-time)
+
+```bash
+# Automatically selects the CPU or NVIDIA image for this host
+nwctl pull
+
+# Explicit no-GPU image
+nwctl pull --profile cpu
+```
+
+### 3. Clone Your Own Code
 
 Each team member clones their own copy:
 
@@ -81,14 +93,16 @@ cd src/universe/autoware_universe
 git checkout feature/my-algorithm
 ```
 
-### 3. Register
+### 4. Register
 
 ```bash
 cd ~/autoware/nwctl
 nwctl register myname --src ~/myname_autoware/src
+# Optional: request a specific available ROS domain:
+# nwctl register myname --src ~/myname_autoware/src --domain-id 42
 ```
 
-### 4. Use
+### 5. Use
 
 ```bash
 # Planning simulation (uses prebuilt image, no compilation needed)
@@ -100,6 +114,27 @@ nwctl myname rosbag-replay
 # Development shell (mounts your source code)
 nwctl myname shell
 ```
+
+## Runtime Profiles
+
+`nwctl` supports two execution paths and an automatic selector:
+
+| Profile | Image | Container acceleration |
+|---------|-------|------------------------|
+| `cpu` | `ghcr.io/autowarefoundation/autoware:universe-devel-humble` | llvmpipe software rendering; no NVIDIA runtime |
+| `nvidia` | `ghcr.io/autowarefoundation/autoware:universe-devel-cuda` | NVIDIA container runtime |
+| `auto` | Selects one of the above | NVIDIA only when both the GPU and Docker runtime are available |
+
+`auto` is the default. Override it per invocation:
+
+```bash
+nwctl check-env shell --profile cpu
+nwctl myname shell --profile cpu
+nwctl myname planning-sim --profile cpu
+```
+
+Set `NWCTL_PROFILE=cpu` in the environment to make CPU mode the default for a
+host or login session.
 
 ## Modes
 
@@ -118,20 +153,18 @@ nwctl <username> planning-sim
 
 ```bash
 nwctl <username> rosbag-replay
+# Select a bag subdirectory and playback speed:
+nwctl <username> rosbag-replay --bag run-001 --rate 0.5
 ```
 
-1. Wait for Autoware to start, confirm pointcloud map is visible in rviz
-2. Click **2D Pose Estimate** to set initial vehicle pose
-3. Open another terminal and play the bag:
+The command starts Autoware, waits for initialization, and then runs
+`ros2 bag play` automatically. Use `--bag`, `--rosbag-path`, and `--rate` to
+choose the recording and speed.
 
-```bash
-docker exec -it aw-<username>-rosbag-replay bash
-source /opt/autoware/setup.bash
-export ROS_DOMAIN_ID=<your_id>    # Check the startup output for your ID
-ros2 bag play /rosbag_data -r 0.2 -s sqlite3
-```
-
-4. In rviz Views panel, set **Target Frame** to `base_link` to follow the vehicle
+In the CPU profile, nwctl disables the CUDA/ML-model perception pipeline and
+uses a 60-second startup delay by default. Map loading, sensor decoding,
+localization, RViz, and rosbag playback remain enabled. Override the delay with
+`NWCTL_ROSBAG_START_DELAY` when needed.
 
 ### Development Shell
 
@@ -182,7 +215,23 @@ nwctl disk                     # Show disk usage per user
 nwctl <username> stop          # Stop user's containers
 nwctl <username> clean         # Clean user's build cache
 nwctl update <username> --src <path>  # Update source path
+nwctl unregister <username> --keep-workspace
+nwctl cleanup --dry-run
+nwctl pull
 ```
+
+## Shell Completion
+
+Bash and Zsh completion is installed automatically by `install.sh`. For a
+source checkout, enable it in the current shell with:
+
+```bash
+source completions/nwctl.bash                  # Bash
+fpath=("$PWD/completions" $fpath); compinit    # Zsh
+```
+
+Completion includes commands, modes, options, registered usernames, common
+playback rates, and filesystem paths.
 
 ## FAQ
 
@@ -225,7 +274,9 @@ ros2 bag play /rosbag_data -r 0.2 -s sqlite3
 ```
 
 ### Q: Are build artifacts preserved after container exit?
-Yes. Build artifacts are in your workspace directory on the host. They persist across container restarts.
+Yes. Build artifacts are stored in `/var/lib/nwctl/workspaces/<user>/` for an
+installed deployment and persist across container restarts and source branch
+changes.
 
 ### Q: How to switch branches for testing?
 Manage your code on the host machine:
@@ -250,4 +301,7 @@ nwctl myname shell
 | `nwctl list` | List all users |
 | `nwctl status` | Show running containers |
 | `nwctl disk` | Show disk usage |
+| `nwctl cleanup [--dry-run]` | Clean or preview orphan resources |
+| `nwctl pull` | Pull the configured image |
+| `nwctl completion <bash\|zsh>` | Print completion setup |
 | `nwctl -h` | Show help |

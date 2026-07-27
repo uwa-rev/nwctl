@@ -44,8 +44,10 @@ jobs:
           mkdir -p /tmp/nwctl
           cp -r nwctl check-env.sh dev-shell.sh env.sh fix-display.sh \
                 install.sh planning-sim.sh rosbag-replay.sh start.sh \
-                test-manual.sh uninstall.sh README.md /tmp/nwctl/
+                test-manual.sh uninstall.sh README.md LICENSE docs \
+                completions /tmp/nwctl/
           tar czf "nwctl-${VERSION}.tar.gz" -C /tmp nwctl/
+          sha256sum "nwctl-${VERSION}.tar.gz" > "nwctl-${VERSION}.tar.gz.sha256"
 
       - name: Generate changelog
         id: changelog
@@ -78,7 +80,7 @@ jobs:
             tar xzf nwctl-${{ steps.version.outputs.version }}.tar.gz
             cd nwctl
 
-            # Install to PATH (creates symlink in /usr/local/bin)
+            # Install program, shared state, and shell completion
             sudo bash install.sh
 
             # Verify
@@ -92,4 +94,6 @@ jobs:
             nwctl <username> rosbag-replay
             nwctl <username> shell
             ```
-          files: "nwctl-${{ steps.version.outputs.version }}.tar.gz"
+          files: |
+            nwctl-${{ steps.version.outputs.version }}.tar.gz
+            nwctl-${{ steps.version.outputs.version }}.tar.gz.sha256

@@ -13,18 +13,22 @@ PASS=0
 FAIL=0
 WARN=0
 
-pass() { echo -e "  ${GREEN}[OK]${NC} $1"; ((PASS++)); }
-fail() { echo -e "  ${RED}[FAIL]${NC} $1"; echo -e "       ${YELLOW}Fix: $2${NC}"; ((FAIL++)); }
-warn() { echo -e "  ${YELLOW}[WARN]${NC} $1"; ((WARN++)); }
+pass() { echo -e "  ${GREEN}[OK]${NC} $1"; PASS=$((PASS + 1)); }
+fail() { echo -e "  ${RED}[FAIL]${NC} $1"; echo -e "       ${YELLOW}Fix: $2${NC}"; FAIL=$((FAIL + 1)); }
+warn() { echo -e "  ${YELLOW}[WARN]${NC} $1"; WARN=$((WARN + 1)); }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
 MODE="${1:-all}"
+CHECK_PROFILE="${2:-${NWCTL_PROFILE}}"
+nwctl_resolve_profile "${CHECK_PROFILE}"
 
 echo ""
 echo "=========================================="
 echo " Autoware Environment Check"
+echo " Profile: ${NWCTL_ACTIVE_PROFILE}"
+echo " Image:   ${AUTOWARE_IMAGE}"
 echo "=========================================="
 echo ""
 
@@ -42,21 +46,28 @@ else
     fail "Docker cannot run (permission denied or service not started)" "sudo usermod -aG docker \$USER && re-login"
 fi
 
-# 2. NVIDIA GPU
-echo "[2/6] NVIDIA GPU"
-if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
-    pass "NVIDIA GPU: ${GPU_NAME}"
-else
-    fail "nvidia-smi not available" "Install NVIDIA driver >= 525"
-fi
+# 2. Runtime profile
+echo "[2/6] Runtime Profile"
+if [ "${NWCTL_ACTIVE_PROFILE}" = "nvidia" ]; then
+    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        pass "NVIDIA GPU: ${GPU_NAME}"
+    else
+        fail "nvidia-smi not available" "Install a compatible NVIDIA driver or use --profile cpu"
+    fi
 
-if dpkg -l 2>/dev/null | grep -q nvidia-container-toolkit; then
-    pass "nvidia-container-toolkit installed"
-elif rpm -qa 2>/dev/null | grep -q nvidia-container-toolkit; then
-    pass "nvidia-container-toolkit installed"
+    if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'; then
+        pass "Docker nvidia runtime available"
+    else
+        fail "Docker nvidia runtime unavailable" "Install/configure NVIDIA Container Toolkit"
+    fi
 else
-    fail "nvidia-container-toolkit not installed" "See https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
+    pass "CPU profile selected (NVIDIA GPU is not required)"
+    if [ -e /dev/dri ]; then
+        warn "/dev/dri exists but CPU profile uses software rendering"
+    else
+        pass "Software rendering will use llvmpipe"
+    fi
 fi
 
 # 3. Docker image

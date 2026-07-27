@@ -1,5 +1,6 @@
 # Runtime files (generated per-host)
 users.conf
+users.conf.lock
 workspaces/
 
 # Internal docs (not distributed)
@@ -7,6 +8,7 @@ CONTRIBUTING.md
 
 # Intermediate doc build artifacts
 docs/*.html
+dist/
 
 # Editor
 *.swp

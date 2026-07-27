@@ -11,8 +11,9 @@
 | 命令 | 说明 |
 |------|------|
 | `nwctl register <name> --src <path>` | 注册新用户，绑定源码目录 |
+| `nwctl register <name> --src <path> --domain-id <0-232>` | 使用指定的可用 ROS Domain ID 注册 |
 | `nwctl update <name> --src <path>` | 更新用户源码路径 |
-| `nwctl unregister <name>` | 注销用户（保留 workspace） |
+| `nwctl unregister <name>` | 注销用户并删除 build/install/log workspace |
 | `nwctl unregister <name> --keep-workspace` | 注销用户（明确保留 workspace） |
 | `nwctl list` | 列出所有已注册用户及其 DOMAIN_ID |
 
@@ -32,11 +33,34 @@
 |------|------|
 | `nwctl status` | 显示所有正在运行的 aw-* 容器 |
 | `nwctl disk` | 显示每个用户的磁盘占用（workspace） |
-| `nwctl cleanup` | 清理孤立容器、临时文件、过期锁文件 |
+| `nwctl cleanup` | 清理孤立容器和临时文件 |
 | `nwctl cleanup --dry-run` | 预览 cleanup 会清理什么（不实际执行） |
 | `nwctl check-env [mode]` | 检查运行环境（Docker/GPU/镜像/Display/数据/资源） |
 | `nwctl version` | 显示版本号 |
+| `nwctl pull` | 拉取或更新配置的容器镜像 |
+| `nwctl pull --profile cpu` | 拉取无 GPU 的 Humble 开发镜像 |
+| `nwctl completion <bash\|zsh>` | 输出当前源码目录的补全启用命令 |
 | `nwctl -h` | 显示帮助 |
+
+---
+
+## CPU 与 NVIDIA Profile
+
+默认 `auto` 会检测 NVIDIA GPU 和 Docker runtime：两者都可用时使用
+`nvidia`，否则使用 `cpu`。
+
+| Profile | 镜像 | 运行参数 |
+|---------|------|----------|
+| `cpu` | `ghcr.io/autowarefoundation/autoware:universe-devel-humble` | 软件渲染，不传 NVIDIA runtime |
+| `nvidia` | `ghcr.io/autowarefoundation/autoware:universe-devel-cuda` | `--runtime=nvidia` |
+
+```bash
+nwctl check-env shell --profile cpu
+nwctl <name> shell --profile cpu
+nwctl <name> planning-sim --profile cpu
+```
+
+可设置 `NWCTL_PROFILE=cpu`，让当前主机默认使用 CPU 模式。
 
 ---
 
@@ -64,17 +88,14 @@ nwctl <name> planning-sim
 
 ```bash
 nwctl <name> rosbag-replay
+nwctl <name> rosbag-replay --bag <子目录> --rate 0.5
 ```
 
 - 使用镜像内预编译版本
-- 启动后另开终端执行回放：
-
-```bash
-docker exec -it aw-<name>-rosbag-replay bash
-source /opt/autoware/setup.bash
-export ROS_DOMAIN_ID=<your_id>   # 从启动输出中查看分配的 ID
-ros2 bag play /rosbag_data -r 0.2 -s sqlite3
-```
+- 自动启动 Autoware，等待初始化后执行 `ros2 bag play`
+- `--bag` 选择 `--rosbag-path` 下的子目录，`--rate` 设置回放速度
+- CPU 模式默认关闭依赖 CUDA/ML 模型的感知管线，并等待 60 秒后开始回放；地图、传感器解码、定位和 rviz 保持启用
+- 可通过 `NWCTL_ROSBAG_START_DELAY` 调整自动回放前的等待时间
 
 - 在 rviz Views 面板中将 **Target Frame** 设为 `base_link` 以跟随车辆
 
@@ -119,10 +140,10 @@ ros2 launch autoware_launch planning_simulator.launch.xml \
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │                      nwctl CLI Tool                          │  │
-│  │  install.sh  →  /usr/local/bin/nwctl  (symlink)              │  │
+│  │  /usr/local/bin/nwctl → /opt/nwctl/nwctl                     │  │
 │  │                                                              │  │
 │  │  env.sh          ← 全局配置（路径、镜像名、车辆型号）          │  │
-│  │  users.conf      ← 注册表：name:domain_id:src_path           │  │
+│  │  /var/lib/nwctl/users.conf ← 注册表                          │  │
 │  │  check-env.sh    ← 启动前环境自检                            │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                              │                                      │
@@ -176,7 +197,7 @@ ros2 launch autoware_launch planning_simulator.launch.xml \
 |------|---------|------|
 | ROS 话题 | `ROS_DOMAIN_ID` | 每用户自动分配，从 10 开始，跳过保留 ID（5） |
 | 源代码 | 独立 git clone | 每人管理自己的仓库和分支 |
-| 编译产物 | 独立目录 | `nwctl/workspaces/<user>/build`, `install` |
+| 编译产物 | 独立挂载 | `/var/lib/nwctl/workspaces/<user>/build`, `install`, `log` |
 | 容器命名 | `aw-<user>-<mode>` | 避免冲突，便于管理 |
 | 注册表写入 | `flock`（10s 超时） | `users.conf.lock` 防止并发写冲突 |
 | GPU | 共享 | NVIDIA runtime 支持多容器同时使用 |
@@ -194,6 +215,7 @@ docker pull ghcr.io/autowarefoundation/autoware:universe-devel-cuda
 # 安装 nwctl
 cd ~/autoware/nwctl
 sudo ./install.sh
+# Bash/Zsh 补全会同时安装，重新打开终端后按 Tab 使用
 ```
 
 ### 团队成员（每人）
@@ -282,8 +304,9 @@ nwctl check-env
 
 **Q: 编译产物在容器重启后是否保留？**
 
-保留。编译产物在宿主机的 `nwctl/workspaces/<user>/` 目录中，容器重启不影响。
+保留。安装版的编译产物位于宿主机 `/var/lib/nwctl/workspaces/<user>/`
+目录中，容器重启不影响。
 
 ---
 
-*nwctl v0.1.2 — Nuway Autoware Team*
+*nwctl v0.2.2 — Nuway Autoware Team*

@@ -15,11 +15,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: Run shellcheck on all scripts
         run: |
-          # Skip SC1091 (can't follow sourced files) and SC2034 (unused vars in env.sh)
-          shellcheck -x -e SC1091,SC2034 \
+          # SC2207 is conventional for programmable-completion COMPREPLY arrays.
+          shellcheck -x -e SC1091,SC2034,SC2207 \
             nwctl check-env.sh env.sh fix-display.sh \
             planning-sim.sh rosbag-replay.sh dev-shell.sh \
-            test-manual.sh install.sh uninstall.sh
+            test-manual.sh install.sh uninstall.sh tests/test_cli.sh \
+            completions/nwctl.bash
 
   test:
     name: Basic Validation
@@ -57,6 +58,9 @@ jobs:
           # nwctl --help sources env.sh which needs SCRIPT_DIR set correctly
           # Since we're in the repo root, this should work
           bash nwctl --help
+
+      - name: Run CLI behavior tests
+        run: bash tests/test_cli.sh
 
       - name: Test install and uninstall
         run: |

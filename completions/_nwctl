@@ -1,0 +1,79 @@
+#compdef nwctl
+
+_nwctl_users() {
+  local -a users
+  users=("${(@f)$(nwctl _complete users 2>/dev/null)}")
+  _describe 'registered user' users
+}
+
+_nwctl() {
+  local context state line
+  local -a commands
+  commands=(
+    'register:Register a user'
+    'update:Update a user source path'
+    'unregister:Remove a user'
+    'list:List registered users'
+    'status:Show running containers'
+    'disk:Show per-user disk usage'
+    'cleanup:Clean orphan resources'
+    'pull:Pull the configured image'
+    'check-env:Run environment checks'
+    'completion:Print completion setup'
+    'version:Show version'
+  )
+
+  _arguments -C \
+    '1:command or user:->command' \
+    '*::argument:->args'
+
+  case "$state" in
+    command)
+      _alternative \
+        'commands:command:(( ${commands[@]} ))' \
+        'users:registered user:_nwctl_users'
+      ;;
+    args)
+      case "${line[1]}" in
+        register|update)
+          _arguments \
+            '--src[Autoware source directory]:directory:_directories' \
+            '--domain-id[Explicit ROS domain ID]:id:'
+          ;;
+        unregister)
+          _arguments '--keep-workspace[Keep build workspace]'
+          ;;
+        cleanup)
+          _arguments '--dry-run[Preview without deleting]'
+          ;;
+        pull)
+          _arguments '--profile[Runtime profile]:profile:(auto cpu nvidia)'
+          ;;
+        check-env)
+          _arguments \
+            '1:mode:(all shell planning-sim rosbag-replay)' \
+            '--profile[Runtime profile]:profile:(auto cpu nvidia)'
+          ;;
+        completion)
+          _values 'shell' bash zsh
+          ;;
+        list|status|disk|version)
+          ;;
+        *)
+          if (( CURRENT == 3 )); then
+            _values 'mode' shell planning-sim rosbag-replay stop clean
+          else
+            _arguments \
+              '--map-name[Map directory name]:name:' \
+              '--rosbag-path[Rosbag base directory]:directory:_directories' \
+              '--bag[Rosbag subdirectory]:directory:_directories' \
+              '--rate[Playback rate]:rate:(0.5 1.0 2.0)' \
+              '--profile[Runtime profile]:profile:(auto cpu nvidia)'
+          fi
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_nwctl "$@"

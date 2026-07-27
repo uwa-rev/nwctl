@@ -11,8 +11,9 @@
 | Command | Description |
 |---------|-------------|
 | `nwctl register <name> --src <path>` | Register a new user with source directory |
+| `nwctl register <name> --src <path> --domain-id <0-232>` | Register with a specific available ROS domain ID |
 | `nwctl update <name> --src <path>` | Update user's source path |
-| `nwctl unregister <name>` | Remove user from registry (keeps workspace) |
+| `nwctl unregister <name>` | Remove user and delete build/install/log workspace |
 | `nwctl unregister <name> --keep-workspace` | Remove user (explicitly keep workspace) |
 | `nwctl list` | List all registered users and their DOMAIN_IDs |
 
@@ -32,11 +33,34 @@
 |---------|-------------|
 | `nwctl status` | Show all running aw-* containers |
 | `nwctl disk` | Show disk usage per user (workspace) |
-| `nwctl cleanup` | Remove orphan containers, temp files, stale locks |
+| `nwctl cleanup` | Remove orphan containers and temporary files |
 | `nwctl cleanup --dry-run` | Preview what cleanup would remove (no changes) |
 | `nwctl check-env [mode]` | Pre-flight check (Docker/GPU/image/display/data/resources) |
 | `nwctl version` | Show version number |
+| `nwctl pull` | Pull or update the configured container image |
+| `nwctl pull --profile cpu` | Pull the no-GPU Humble development image |
+| `nwctl completion <bash\|zsh>` | Print completion setup for a source checkout |
 | `nwctl -h` | Show help |
+
+---
+
+## CPU and NVIDIA Profiles
+
+The default `auto` profile selects `nvidia` only when both an NVIDIA GPU and
+the Docker NVIDIA runtime are available; otherwise it selects `cpu`.
+
+| Profile | Image | Runtime |
+|---------|-------|---------|
+| `cpu` | `ghcr.io/autowarefoundation/autoware:universe-devel-humble` | Software rendering, no NVIDIA runtime |
+| `nvidia` | `ghcr.io/autowarefoundation/autoware:universe-devel-cuda` | `--runtime=nvidia` |
+
+```bash
+nwctl check-env shell --profile cpu
+nwctl <name> shell --profile cpu
+nwctl <name> planning-sim --profile cpu
+```
+
+Set `NWCTL_PROFILE=cpu` to make CPU mode the default for a host/session.
 
 ---
 
@@ -64,17 +88,14 @@ nwctl <name> planning-sim
 
 ```bash
 nwctl <name> rosbag-replay
+nwctl <name> rosbag-replay --bag <subdirectory> --rate 0.5
 ```
 
 - Uses the prebuilt version inside the image
-- After startup, open another terminal to play the bag:
-
-```bash
-docker exec -it aw-<name>-rosbag-replay bash
-source /opt/autoware/setup.bash
-export ROS_DOMAIN_ID=<your_id>   # Check the startup output for your assigned ID
-ros2 bag play /rosbag_data -r 0.2 -s sqlite3
-```
+- Starts Autoware and runs `ros2 bag play` after the initialization delay
+- `--bag` selects a subdirectory below `--rosbag-path`; `--rate` controls speed
+- The CPU profile disables the CUDA/ML-model perception pipeline and waits 60 seconds before playback; map loading, sensor decoding, localization, and rviz remain enabled
+- Set `NWCTL_ROSBAG_START_DELAY` to override the automatic playback delay
 
 - In the rviz **Views** panel, set **Target Frame** to `base_link` to follow the vehicle
 
@@ -119,10 +140,10 @@ ros2 launch autoware_launch planning_simulator.launch.xml \
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │                      nwctl CLI Tool                          │  │
-│  │  install.sh  →  /usr/local/bin/nwctl  (symlink)              │  │
+│  │  /usr/local/bin/nwctl → /opt/nwctl/nwctl                     │  │
 │  │                                                              │  │
 │  │  env.sh          ← global config (paths, image, models)      │  │
-│  │  users.conf      ← registry: name:domain_id:src_path         │  │
+│  │  /var/lib/nwctl/users.conf ← shared registry                 │  │
 │  │  check-env.sh    ← pre-flight environment checker            │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                              │                                      │
@@ -176,7 +197,7 @@ ros2 launch autoware_launch planning_simulator.launch.xml \
 |----------|--------|---------|
 | ROS topics | `ROS_DOMAIN_ID` | Auto-assigned per user, starting at 10, skipping reserved IDs (5) |
 | Source code | Separate git clones | Each user manages their own repository and branches |
-| Build artifacts | Separate directories | `nwctl/workspaces/<user>/build`, `install` |
+| Build artifacts | Separate mounts | `/var/lib/nwctl/workspaces/<user>/build`, `install`, `log` |
 | Container names | `aw-<user>-<mode>` | Prevents conflicts, easy to identify |
 | Registry writes | `flock` (10s timeout) | `users.conf.lock` prevents concurrent write conflicts |
 | GPU | Shared | NVIDIA runtime supports multiple containers simultaneously |
@@ -194,6 +215,7 @@ docker pull ghcr.io/autowarefoundation/autoware:universe-devel-cuda
 # Install nwctl
 cd ~/autoware/nwctl
 sudo ./install.sh
+# Bash/Zsh completion is installed too; start a new shell and press Tab.
 ```
 
 ### Each Team Member
@@ -282,7 +304,8 @@ nwctl check-env
 
 **Q: Are build artifacts preserved after container exit?**
 
-Yes. Build artifacts live in `nwctl/workspaces/<user>/` on the host and persist across container restarts.
+Yes. In an installed deployment, build artifacts live in
+`/var/lib/nwctl/workspaces/<user>/` and persist across container restarts.
 
 **Q: How do I switch branches for testing?**
 
@@ -296,4 +319,4 @@ nwctl myname shell
 
 ---
 
-*nwctl v0.1.2 — Nuway Autoware Team*
+*nwctl v0.2.2 — Nuway Autoware Team*
