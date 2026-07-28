@@ -319,4 +319,4 @@ nwctl myname shell
 
 ---
 
-*nwctl v0.2.2 — Nuway Autoware Team*
+*nwctl v0.2.1 — Nuway Autoware Team*

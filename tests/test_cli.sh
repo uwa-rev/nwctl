@@ -69,7 +69,7 @@ assert_contains() {
     fi
 }
 
-run_nwctl version | grep -q 'nwctl v0.2.2'
+run_nwctl version | grep -q 'nwctl v0.2.1'
 run_nwctl help | grep -F 'Nuway Autoware Container Manager' >/dev/null
 run_nwctl register alice --src "${SOURCE_ROOT}/src" >/dev/null
 run_nwctl _complete users | grep -qx alice
