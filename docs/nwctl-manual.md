@@ -10,11 +10,12 @@
 
 | 命令 | 说明 |
 |------|------|
-| `nwctl register <name> --src <path>` | 注册新用户，绑定源码目录 |
-| `nwctl register <name> --src <path> --domain-id <0-232>` | 使用指定的可用 ROS Domain ID 注册 |
-| `nwctl update <name> --src <path>` | 更新用户源码路径 |
-| `nwctl unregister <name>` | 注销用户并删除 build/install/log workspace |
-| `nwctl unregister <name> --keep-workspace` | 注销用户（明确保留 workspace） |
+| `sudo nwctl register <name> --src <path>` | 管理员注册新目标，自动分配开发 DOMAIN |
+| `sudo nwctl set-domain <name> --domain-id <10-232>` | 管理员分配开发/集成 DOMAIN |
+| `sudo nwctl set-domain <name> --domain-id <0-9> --production` | 管理员授权车辆/生产 DOMAIN |
+| `sudo nwctl update <name> --src <path>` | 更新用户源码路径 |
+| `sudo nwctl unregister <name>` | 注销用户并删除 build/install/log workspace |
+| `sudo nwctl unregister <name> --keep-workspace` | 注销用户（明确保留 workspace） |
 | `nwctl list` | 列出所有已注册用户及其 DOMAIN_ID |
 
 ### 运行模式
@@ -195,7 +196,7 @@ ros2 launch autoware_launch planning_simulator.launch.xml \
 
 | 资源 | 隔离方式 | 说明 |
 |------|---------|------|
-| ROS 话题 | `ROS_DOMAIN_ID` | 每用户自动分配，从 10 开始，跳过保留 ID（5） |
+| ROS 话题 | `ROS_DOMAIN_ID` | 开发环境自动分配 10–199；集成环境 200–232 和车辆/生产 0–9 由管理员分配 |
 | 源代码 | 独立 git clone | 每人管理自己的仓库和分支 |
 | 编译产物 | 独立挂载 | `/var/lib/nwctl/workspaces/<user>/build`, `install`, `log` |
 | 容器命名 | `aw-<user>-<mode>` | 避免冲突，便于管理 |
@@ -227,8 +228,8 @@ git clone https://github.com/autowarefoundation/autoware.git myname_aw
 cd myname_aw
 vcs import src < repositories/autoware.repos
 
-# 2. 注册
-nwctl register myname --src ~/myname_aw/src
+# 2. 请管理员注册
+sudo nwctl register myname --src /home/myname/myname_aw/src
 
 # 3. 环境自检
 nwctl check-env
@@ -287,7 +288,10 @@ docker run --rm --runtime=nvidia nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
 
 **Q: 多用户 ROS 话题互相干扰**
 
-每个用户自动分配唯一 `ROS_DOMAIN_ID`，设计上完全隔离，无需手动处理。
+管理员注册目标后，开发环境会自动分配唯一的 `ROS_DOMAIN_ID`（10–199）。
+注册、源码更新、注销和 DOMAIN_ID 修改均要求 root。车辆/生产 ID 0–9
+必须通过 `sudo nwctl set-domain <目标> --domain-id <ID> --production`
+显式授权。DOMAIN_ID 只隔离 DDS discovery，并不是认证或授权边界。
 
 **Q: colcon build 找不到依赖**
 ```bash

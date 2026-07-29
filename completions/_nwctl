@@ -12,6 +12,7 @@ _nwctl() {
   commands=(
     'register:Register a user'
     'update:Update a user source path'
+    'set-domain:Assign a ROS domain (administrator only)'
     'unregister:Remove a user'
     'list:List registered users'
     'status:Show running containers'
@@ -37,8 +38,12 @@ _nwctl() {
       case "${line[1]}" in
         register|update)
           _arguments \
-            '--src[Autoware source directory]:directory:_directories' \
-            '--domain-id[Explicit ROS domain ID]:id:'
+            '--src[Autoware source directory]:directory:_directories'
+          ;;
+        set-domain)
+          _arguments \
+            '--domain-id[ROS domain ID]:id:' \
+            '--production[Acknowledge vehicle/production assignment for IDs 0-9]'
           ;;
         unregister)
           _arguments '--keep-workspace[Keep build workspace]'

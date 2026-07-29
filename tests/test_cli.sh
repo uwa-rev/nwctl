@@ -69,12 +69,25 @@ assert_contains() {
     fi
 }
 
-run_nwctl version | grep -q 'nwctl v0.2.1'
+run_nwctl version | grep -q 'nwctl v0.2.2'
 run_nwctl help | grep -F 'Nuway Autoware Container Manager' >/dev/null
+if NWCTL_STATE_DIR=/var/lib/nwctl run_nwctl register blocked \
+    --src "${SOURCE_ROOT}/src" >"${TEST_ROOT}/admin-denied.log" 2>&1; then
+    echo "FAIL: unprivileged system registry mutation was accepted" >&2
+    exit 1
+fi
+assert_contains "${TEST_ROOT}/admin-denied.log" "Administrator privileges are required"
 run_nwctl register alice --src "${SOURCE_ROOT}/src" >/dev/null
 run_nwctl _complete users | grep -qx alice
-run_nwctl register bob --src "${SOURCE_ROOT}/src" --domain-id 42 >/dev/null
+run_nwctl register bob --src "${SOURCE_ROOT}/src" >/dev/null
+run_nwctl set-domain bob --domain-id 42 >/dev/null
 grep -q '^bob:42:' "${STATE_DIR}/users.conf"
+if run_nwctl set-domain bob --domain-id 5 >/dev/null 2>&1; then
+    echo "FAIL: production DOMAIN_ID was accepted without --production" >&2
+    exit 1
+fi
+run_nwctl set-domain bob --domain-id 5 --production >/dev/null
+grep -q '^bob:5:' "${STATE_DIR}/users.conf"
 
 if run_nwctl alice shell --rate 0 >/dev/null 2>&1; then
     echo "FAIL: zero playback rate was accepted" >&2
@@ -151,8 +164,19 @@ COMP_WORDS=(nwctl al); COMP_CWORD=1; _nwctl
 COMP_WORDS=(nwctl alice r); COMP_CWORD=2; _nwctl
 [[ " ${COMPREPLY[*]} " == *" rosbag-replay "* ]]
 COMP_WORDS=(nwctl register alice --); COMP_CWORD=3; _nwctl
-[[ " ${COMPREPLY[*]} " == *" --domain-id "* ]]
+[[ " ${COMPREPLY[*]} " != *" --domain-id "* ]]
+COMP_WORDS=(nwctl set-domain alice --); COMP_CWORD=3; _nwctl
+[[ " ${COMPREPLY[*]} " == *" --production "* ]]
 COMP_WORDS=(nwctl alice shell --profile c); COMP_CWORD=4; _nwctl
 [[ " ${COMPREPLY[*]} " == *" cpu "* ]]
+
+# Staged installs preserve root-only registry modes (ownership is root when the
+# real installer runs under sudo; DESTDIR tests run as the current user).
+STAGE_ROOT="${TEST_ROOT}/stage"
+env -u NWCTL_STATE_DIR DESTDIR="${STAGE_ROOT}" bash "${ROOT}/install.sh" >/dev/null
+[[ "$(stat -c %a "${STAGE_ROOT}/var/lib/nwctl/users.conf")" == 644 ]]
+[[ "$(stat -c %a "${STAGE_ROOT}/var/lib/nwctl/users.conf.lock")" == 600 ]]
+[[ "$(stat -c %a "${STAGE_ROOT}/var/lib/nwctl")" == 755 ]]
+[[ "$(stat -c %a "${STAGE_ROOT}/var/lib/nwctl/workspaces")" == 2775 ]]
 
 echo "CLI behavior tests: PASS"

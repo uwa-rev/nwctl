@@ -32,7 +32,7 @@ Inside Docker Container
 
 | Resource | Method | Details |
 |----------|--------|---------|
-| ROS topics | ROS_DOMAIN_ID | Auto-assigned per user, fully isolated |
+| ROS topics | ROS_DOMAIN_ID | Development IDs 10-199 are auto-assigned; vehicle IDs 0-9 are admin-controlled |
 | Source code | Separate git clones | Each user manages their own repo & branches |
 | Build artifacts | Separate mounts | `/var/lib/nwctl/workspaces/<user>/` |
 | Containers | Named per user | `aw-zhangsan-shell`, `aw-lisi-rosbag-replay` |
@@ -93,14 +93,33 @@ cd src/universe/autoware_universe
 git checkout feature/my-algorithm
 ```
 
-### 4. Register
+### 4. Register (administrator)
 
 ```bash
-cd ~/autoware/nwctl
-nwctl register myname --src ~/myname_autoware/src
-# Optional: request a specific available ROS domain:
-# nwctl register myname --src ~/myname_autoware/src --domain-id 42
+sudo nwctl register myname --src /home/myname/myname_autoware/src
 ```
+
+Registration, source updates, removal, and DOMAIN_ID changes modify the
+system-wide registry and therefore require administrator privileges. New
+targets automatically receive a development DOMAIN_ID in the range 10-199.
+
+Administrators may assign an integration ID (200-232):
+
+```bash
+sudo nwctl set-domain myname --domain-id 200
+```
+
+Vehicle/production IDs 0-9 require an explicit acknowledgement:
+
+```bash
+sudo nwctl set-domain approved_vehicle_build --domain-id 5 --production
+```
+
+`ROS_DOMAIN_ID` provides DDS discovery separation, not authentication or
+authorization. Developers in the `docker` group can obtain host-equivalent
+privileges and must be treated as trusted administrators; remove untrusted
+developers from that group and use a controlled container service/rootless
+runtime when stronger isolation is required.
 
 ### 5. Use
 
@@ -248,7 +267,8 @@ docker run --rm --runtime=nvidia nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
 If this fails, reinstall nvidia-container-toolkit and restart Docker.
 
 ### Q: Multiple users' ROS topics interfere with each other
-Each user is auto-assigned a unique `ROS_DOMAIN_ID`. No interference by design.
+Administrator-created development targets receive unique IDs from 10-199.
+Do not use a vehicle/production ID for normal development.
 
 ### Q: colcon build can't find dependencies
 ```bash
@@ -291,8 +311,9 @@ nwctl myname shell
 
 | Command | Description |
 |---------|-------------|
-| `nwctl register <name> --src <path>` | Register new user |
-| `nwctl update <name> --src <path>` | Update source path |
+| `sudo nwctl register <name> --src <path>` | Register a target with an automatic development DOMAIN |
+| `sudo nwctl set-domain <name> --domain-id <ID> [--production]` | Assign a DOMAIN |
+| `sudo nwctl update <name> --src <path>` | Update source path |
 | `nwctl <name> planning-sim` | Planning simulation |
 | `nwctl <name> rosbag-replay` | Rosbag replay |
 | `nwctl <name> shell` | Development shell |

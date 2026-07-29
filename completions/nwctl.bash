@@ -22,7 +22,7 @@ _nwctl()
             return
             ;;
         --domain-id)
-            COMPREPLY=( $(compgen -W "10 11 12 13 14 15" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "0 1 2 3 4 5 6 7 8 9 10 20 30 200" -- "${cur}") )
             return
             ;;
         --profile)
@@ -38,18 +38,17 @@ _nwctl()
     if (( COMP_CWORD == 1 )); then
         local users
         users="$(nwctl _complete users 2>/dev/null)"
-        COMPREPLY=( $(compgen -W "register update unregister list status disk cleanup pull check-env completion version help ${users}" -- "${cur}") )
+        COMPREPLY=( $(compgen -W "register update set-domain unregister list status disk cleanup pull check-env completion version help ${users}" -- "${cur}") )
         return
     fi
 
     command="${COMP_WORDS[1]}"
     case "${command}" in
         register|update)
-            if [[ "${command}" == register ]]; then
-                COMPREPLY=( $(compgen -W "--src --domain-id" -- "${cur}") )
-            else
-                COMPREPLY=( $(compgen -W "--src" -- "${cur}") )
-            fi
+            COMPREPLY=( $(compgen -W "--src" -- "${cur}") )
+            ;;
+        set-domain)
+            COMPREPLY=( $(compgen -W "--domain-id --production" -- "${cur}") )
             ;;
         unregister)
             COMPREPLY=( $(compgen -W "--keep-workspace" -- "${cur}") )

@@ -10,11 +10,12 @@
 
 | Command | Description |
 |---------|-------------|
-| `nwctl register <name> --src <path>` | Register a new user with source directory |
-| `nwctl register <name> --src <path> --domain-id <0-232>` | Register with a specific available ROS domain ID |
-| `nwctl update <name> --src <path>` | Update user's source path |
-| `nwctl unregister <name>` | Remove user and delete build/install/log workspace |
-| `nwctl unregister <name> --keep-workspace` | Remove user (explicitly keep workspace) |
+| `sudo nwctl register <name> --src <path>` | Admin registers a target with an automatic development DOMAIN |
+| `sudo nwctl set-domain <name> --domain-id <10-232>` | Admin assigns a development/integration DOMAIN |
+| `sudo nwctl set-domain <name> --domain-id <0-9> --production` | Admin authorizes a vehicle/production DOMAIN |
+| `sudo nwctl update <name> --src <path>` | Update user's source path |
+| `sudo nwctl unregister <name>` | Remove user and delete build/install/log workspace |
+| `sudo nwctl unregister <name> --keep-workspace` | Remove user (explicitly keep workspace) |
 | `nwctl list` | List all registered users and their DOMAIN_IDs |
 
 ### Run Modes
@@ -195,7 +196,7 @@ ros2 launch autoware_launch planning_simulator.launch.xml \
 
 | Resource | Method | Details |
 |----------|--------|---------|
-| ROS topics | `ROS_DOMAIN_ID` | Auto-assigned per user, starting at 10, skipping reserved IDs (5) |
+| ROS topics | `ROS_DOMAIN_ID` | Development IDs 10-199 are auto-assigned; integration 200-232 and vehicle/production 0-9 are admin-assigned |
 | Source code | Separate git clones | Each user manages their own repository and branches |
 | Build artifacts | Separate mounts | `/var/lib/nwctl/workspaces/<user>/build`, `install`, `log` |
 | Container names | `aw-<user>-<mode>` | Prevents conflicts, easy to identify |
@@ -227,8 +228,8 @@ git clone https://github.com/autowarefoundation/autoware.git myname_aw
 cd myname_aw
 vcs import src < repositories/autoware.repos
 
-# 2. Register
-nwctl register myname --src ~/myname_aw/src
+# 2. Ask an administrator to register the target
+sudo nwctl register myname --src /home/myname/myname_aw/src
 
 # 3. Pre-flight check
 nwctl check-env
@@ -287,7 +288,11 @@ docker run --rm --runtime=nvidia nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
 
 **Q: Multiple users' ROS topics interfere with each other**
 
-Each user is automatically assigned a unique `ROS_DOMAIN_ID`. Isolation is by design — no manual action needed.
+Administrator-created development targets are automatically assigned a unique
+`ROS_DOMAIN_ID` in the range 10-199. Registration, source updates, removal, and
+DOMAIN_ID changes require root. Vehicle/production IDs 0-9 require
+`sudo nwctl set-domain <target> --domain-id <ID> --production`. DOMAIN_ID
+separates DDS discovery; it is not an authentication or authorization boundary.
 
 **Q: colcon build can't find dependencies**
 ```bash

@@ -32,26 +32,34 @@ done
 install -m 0644 "${SCRIPT_DIR}/completions/nwctl.bash" "${INSTALL_ROOT}/completions/nwctl.bash"
 install -m 0644 "${SCRIPT_DIR}/completions/_nwctl" "${INSTALL_ROOT}/completions/_nwctl"
 
-# Shared host state. Members of the docker group can register users and write
-# isolated build artifacts. Fall back to the invoking user's primary group.
+# Registry mutations are root-only. The docker group may write isolated build
+# artifacts, but cannot accidentally reassign a vehicle/production DOMAIN_ID.
 STATE_OWNER=root
 STATE_GROUP=docker
+REGISTRY_OWNER=root
+REGISTRY_GROUP=root
 if [ "$(id -u)" -ne 0 ]; then
     STATE_OWNER="$(id -u)"
     STATE_GROUP="$(id -g)"
+    REGISTRY_OWNER="${STATE_OWNER}"
+    REGISTRY_GROUP="${STATE_GROUP}"
 else
     getent group "${STATE_GROUP}" >/dev/null || STATE_GROUP="${SUDO_GID:-$(id -g)}"
 fi
-install -d -m 2775 -o "${STATE_OWNER}" -g "${STATE_GROUP}" "${STATE_DIR}" "${STATE_DIR}/workspaces"
+install -d -m 0755 -o "${REGISTRY_OWNER}" -g "${REGISTRY_GROUP}" "${STATE_DIR}"
+install -d -m 2775 -o "${STATE_OWNER}" -g "${STATE_GROUP}" "${STATE_DIR}/workspaces"
 touch "${STATE_DIR}/users.conf"
-chown "${STATE_OWNER}:${STATE_GROUP}" "${STATE_DIR}/users.conf"
-chmod 0664 "${STATE_DIR}/users.conf"
+chown "${REGISTRY_OWNER}:${REGISTRY_GROUP}" "${STATE_DIR}/users.conf"
+chmod 0644 "${STATE_DIR}/users.conf"
+touch "${STATE_DIR}/users.conf.lock"
+chown "${REGISTRY_OWNER}:${REGISTRY_GROUP}" "${STATE_DIR}/users.conf.lock"
+chmod 0600 "${STATE_DIR}/users.conf.lock"
 
 # Preserve registrations from a source-tree installation on first install.
 if [ ! -s "${STATE_DIR}/users.conf" ] && [ -s "${SCRIPT_DIR}/users.conf" ]; then
     cp "${SCRIPT_DIR}/users.conf" "${STATE_DIR}/users.conf"
-    chown "${STATE_OWNER}:${STATE_GROUP}" "${STATE_DIR}/users.conf"
-    chmod 0664 "${STATE_DIR}/users.conf"
+    chown "${REGISTRY_OWNER}:${REGISTRY_GROUP}" "${STATE_DIR}/users.conf"
+    chmod 0644 "${STATE_DIR}/users.conf"
 fi
 
 ln -sfn "${NWCTL_BIN}" "${INSTALL_PATH}"
@@ -68,6 +76,6 @@ echo "  Completion: Bash and Zsh (start a new shell to activate)"
 echo ""
 echo "  You can now use 'nwctl' from anywhere:"
 echo "    nwctl --help"
-echo "    nwctl register <username> --src <path>"
+echo "    sudo nwctl register <username> --src <path>"
 echo "    nwctl <username> planning-sim"
 echo ""

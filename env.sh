@@ -64,11 +64,10 @@ SHARED_DATA_PATH="${SHARED_DATA_PATH:-${HOME}/autoware_data}"
 SHARED_ROSBAG_PATH="${SHARED_ROSBAG_PATH:-${HOME}/autoware_map/sample-rosbag}"
 SHARED_SRC_PATH="${SHARED_SRC_PATH:-${HOME}/autoware/src}"
 
-# Runtime state. A system installation creates /var/lib/nwctl for members of
-# the docker group. Source-tree usage falls back to the invoking user's XDG
-# state directory so runtime files never dirty the repository.
+# Runtime state. The system registry under /var/lib/nwctl is root-managed.
+# Source-tree usage falls back to the invoking user's XDG state directory.
 if [ -z "${NWCTL_STATE_DIR:-}" ]; then
-    if [ -d /var/lib/nwctl ] && [ -w /var/lib/nwctl ]; then
+    if [ -d /var/lib/nwctl ] && [ -r /var/lib/nwctl/users.conf ]; then
         NWCTL_STATE_DIR=/var/lib/nwctl
     else
         NWCTL_STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/nwctl"

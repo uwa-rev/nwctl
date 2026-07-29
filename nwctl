@@ -3,7 +3,7 @@
 # nwctl - Nuway Autoware Container Manager
 #
 # Usage:
-#   nwctl register <username> --src <src_path>  Register a new user
+#   sudo nwctl register <username> --src <src_path>  Register a new target
 #   nwctl list                                  List all users
 #   nwctl <username> shell                      Enter dev shell
 #   nwctl <username> planning-sim               Launch planning simulation
@@ -12,7 +12,7 @@
 #   nwctl <username> stop                       Stop user's containers
 #   nwctl version                               Show version
 # ============================================================
-NWCTL_VERSION="0.2.1"
+NWCTL_VERSION="0.2.2"
 set -euo pipefail
 
 # Resolve SCRIPT_DIR: follow symlink if nwctl is installed via symlink
@@ -49,7 +49,20 @@ init_workspace() {
         cp -p "${SCRIPT_DIR}/users.conf" "${USER_REGISTRY}"
         echo -e "${YELLOW}Migrated legacy registry to ${USER_REGISTRY}${NC}" >&2
     fi
-    touch "${USER_REGISTRY}"
+    if [ ! -e "${USER_REGISTRY}" ]; then
+        touch "${USER_REGISTRY}"
+    fi
+}
+
+# Registry mutations under the system state directory are administrator-only.
+# A custom state directory remains writable for source-tree development/tests,
+# but cannot affect the installed system registry.
+require_registry_admin() {
+    if [[ "${USER_REGISTRY}" == /var/lib/nwctl/* ]] && [ "$(id -u)" -ne 0 ]; then
+        echo -e "${RED}Administrator privileges are required to modify the nwctl registry.${NC}" >&2
+        echo "Ask an administrator to run this command with sudo." >&2
+        return 1
+    fi
 }
 
 # ---- Registry lock: serialize writes to users.conf ----
@@ -78,21 +91,23 @@ get_src_path() {
     grep "^${username}:" "${USER_REGISTRY}" | cut -d: -f3-
 }
 
-# Reserved DOMAIN_IDs (production use, cannot be assigned)
-RESERVED_DOMAIN_IDS="5"
-
-# Starting DOMAIN_ID (valid range: 0-232, avoid 0-9 for common use)
+# DOMAIN_ID policy:
+#   0-9:   vehicle/production, explicit administrator acknowledgement required
+#   10-199: automatically assigned development domains
+#   200-232: integration/test domains, administrator assignment only
+PRODUCTION_DOMAIN_MIN=0
+PRODUCTION_DOMAIN_MAX=9
 DOMAIN_ID_START=10
+DOMAIN_ID_AUTO_MAX=199
 
 next_domain_id() {
     local candidate
-    for ((candidate=DOMAIN_ID_START; candidate<=232; candidate++)); do
-        echo "${RESERVED_DOMAIN_IDS}" | grep -qw "${candidate}" && continue
+    for ((candidate=DOMAIN_ID_START; candidate<=DOMAIN_ID_AUTO_MAX; candidate++)); do
         cut -d: -f2 "${USER_REGISTRY}" 2>/dev/null | grep -qx "${candidate}" && continue
         echo "${candidate}"
         return 0
     done
-    echo -e "${RED}No available DOMAIN_IDs (max 232)${NC}" >&2
+    echo -e "${RED}No automatically assignable development DOMAIN_IDs (${DOMAIN_ID_START}-${DOMAIN_ID_AUTO_MAX})${NC}" >&2
     return 1
 }
 
@@ -102,11 +117,10 @@ validate_username() {
 }
 
 # Register a new user
-# Usage: register_user <username> <src_path> [domain_id]
+# Usage: register_user <username> <src_path>
 register_user() {
     local username="$1"
     local src_path="${2:-}"
-    local requested_domain_id="${3:-}"
 
     # Validate username: only alphanumeric, underscore, hyphen
     if ! validate_username "${username}"; then
@@ -139,7 +153,7 @@ register_user() {
         echo "  cd myname_autoware && vcs import src < repositories/autoware.repos"
         echo ""
         echo "  # Then register"
-        echo "  nwctl register myname --src ~/myname_autoware/src"
+        echo "  sudo nwctl register myname --src /home/myname/myname_autoware/src"
         return 1
     fi
 
@@ -154,26 +168,10 @@ register_user() {
         return 1
     fi
 
-    # Assign DOMAIN_ID
+    # Registration always receives an automatically allocated development ID.
+    # Administrators use set-domain for integration or production assignments.
     local domain_id
-    if [ -n "${requested_domain_id}" ]; then
-        if ! [[ "${requested_domain_id}" =~ ^[0-9]+$ ]] ||
-           [ "${requested_domain_id}" -gt 232 ]; then
-            echo -e "${RED}Invalid DOMAIN_ID '${requested_domain_id}' (expected 0-232)${NC}"
-            return 1
-        fi
-        if echo "${RESERVED_DOMAIN_IDS}" | grep -qw "${requested_domain_id}"; then
-            echo -e "${RED}DOMAIN_ID ${requested_domain_id} is reserved${NC}"
-            return 1
-        fi
-        if cut -d: -f2 "${USER_REGISTRY}" | grep -qx "${requested_domain_id}"; then
-            echo -e "${RED}DOMAIN_ID ${requested_domain_id} is already assigned${NC}"
-            return 1
-        fi
-        domain_id="${requested_domain_id}"
-    else
-        domain_id=$(next_domain_id)
-    fi
+    domain_id=$(next_domain_id)
 
     # Create user workspace (build/install/log only)
     local user_ws="${USER_WORKSPACES_ROOT}/${username}"
@@ -203,6 +201,43 @@ register_user() {
     echo -e "   ${CYAN}nwctl ${username} rosbag-replay${NC}    Rosbag replay"
     echo "================================================"
     echo ""
+}
+
+set_user_domain() {
+    local username="$1" domain_id="$2" production_ack="${3:-}" tmp old_domain
+
+    if ! validate_username "${username}" ||
+       ! grep -q "^${username}:" "${USER_REGISTRY}" 2>/dev/null; then
+        echo -e "${RED}User '${username}' is not registered${NC}"
+        return 1
+    fi
+    if ! [[ "${domain_id}" =~ ^[0-9]+$ ]] || [ "${domain_id}" -gt 232 ]; then
+        echo -e "${RED}Invalid DOMAIN_ID '${domain_id}' (expected 0-232)${NC}"
+        return 1
+    fi
+    if [ "${domain_id}" -ge "${PRODUCTION_DOMAIN_MIN}" ] &&
+       [ "${domain_id}" -le "${PRODUCTION_DOMAIN_MAX}" ] &&
+       [ "${production_ack}" != "--production" ]; then
+        echo -e "${RED}DOMAIN_ID ${domain_id} is reserved for vehicle/production use.${NC}"
+        echo "Repeat with --production after the approved build and exclusive vehicle test window are confirmed."
+        return 1
+    fi
+    if awk -F: -v id="${domain_id}" -v user="${username}" \
+       '$2 == id && $1 != user { found=1 } END { exit !found }' "${USER_REGISTRY}"; then
+        echo -e "${RED}DOMAIN_ID ${domain_id} is already assigned${NC}"
+        return 1
+    fi
+
+    old_domain=$(get_domain_id "${username}")
+    tmp=$(mktemp "$(dirname "${USER_REGISTRY}")/.users.conf.XXXXXX")
+    awk -F: -v user="${username}" -v id="${domain_id}" '
+        $1 == user { print $1 ":" id ":" substr($0, index($0, $3)); next }
+        { print }
+    ' "${USER_REGISTRY}" > "${tmp}"
+    chmod --reference="${USER_REGISTRY}" "${tmp}" 2>/dev/null || true
+    chown --reference="${USER_REGISTRY}" "${tmp}" 2>/dev/null || true
+    mv "${tmp}" "${USER_REGISTRY}"
+    echo -e "${GREEN}Updated DOMAIN_ID for '${username}': ${old_domain} -> ${domain_id}${NC}"
 }
 
 # List all registered users
@@ -418,9 +453,10 @@ print_help() {
     echo -e "${GREEN}nwctl${NC} - Nuway Autoware Container Manager (v${NWCTL_VERSION})"
     echo ""
     echo "Usage:"
-    echo "  nwctl register <username> --src <src_path> [--domain-id <0-232>]"
-    echo "  nwctl update <username> --src <new_path>    Update user source path"
-    echo "  nwctl unregister <username> [--keep-workspace]  Remove user"
+    echo "  sudo nwctl register <username> --src <src_path>  Register with an auto-assigned dev DOMAIN"
+    echo "  sudo nwctl update <username> --src <new_path>    Update user source path"
+    echo "  sudo nwctl set-domain <username> --domain-id <0-232> [--production]"
+    echo "  sudo nwctl unregister <username> [--keep-workspace]  Remove user"
     echo "  nwctl list                                  List all users"
     echo "  nwctl status                                Show running containers"
     echo "  nwctl disk                                  Show disk usage"
@@ -443,11 +479,11 @@ print_help() {
     echo "  --profile <profile>     Runtime profile: auto, cpu, or nvidia"
     echo ""
     echo "Examples:"
-    echo "  nwctl register zhangsan --src ~/zhangsan_autoware/src"
+    echo "  sudo nwctl register zhangsan --src /home/zhangsan/zhangsan_autoware/src"
     echo "  nwctl zhangsan planning-sim"
     echo "  nwctl zhangsan rosbag-replay"
     echo "  nwctl zhangsan shell"
-    echo "  nwctl update zhangsan --src ~/zhangsan_v2/src"
+    echo "  sudo nwctl update zhangsan --src /home/zhangsan/zhangsan_v2/src"
     echo ""
 }
 
@@ -536,19 +572,20 @@ init_workspace
 # Handle commands
 case "$1" in
     register)
+        require_registry_admin
         [ $# -lt 2 ] && { echo -e "${RED}Usage: nwctl register <username> --src <src_path>${NC}"; exit 1; }
-        REG_USER="$2"; shift 2; REG_SRC=""; REG_DOMAIN_ID=""
+        REG_USER="$2"; shift 2; REG_SRC=""
         while [[ $# -gt 0 ]]; do
             case $1 in
                 --src) [ $# -ge 2 ] || { echo -e "${RED}Missing value for --src${NC}"; exit 1; }; REG_SRC="$2"; shift 2 ;;
-                --domain-id) [ $# -ge 2 ] || { echo -e "${RED}Missing value for --domain-id${NC}"; exit 1; }; REG_DOMAIN_ID="$2"; shift 2 ;;
                 *) echo "Unknown option: $1"; exit 1 ;;
             esac
         done
-        with_registry_lock register_user "${REG_USER}" "${REG_SRC}" "${REG_DOMAIN_ID}"
+        with_registry_lock register_user "${REG_USER}" "${REG_SRC}"
         exit 0
         ;;
     update)
+        require_registry_admin
         [ $# -lt 2 ] && { echo -e "${RED}Usage: nwctl update <username> --src <new_path>${NC}"; exit 1; }
         UPD_USER="$2"; shift 2; UPD_SRC=""
         while [[ $# -gt 0 ]]; do
@@ -575,7 +612,23 @@ case "$1" in
         echo -e "${GREEN}Updated source path for '${UPD_USER}': ${UPD_SRC}${NC}"
         exit 0
         ;;
+    set-domain)
+        require_registry_admin
+        [ $# -lt 2 ] && { echo -e "${RED}Usage: nwctl set-domain <username> --domain-id <0-232> [--production]${NC}"; exit 1; }
+        DOM_USER="$2"; shift 2; DOM_ID=""; DOM_PRODUCTION=""
+        while [[ $# -gt 0 ]]; do
+            case $1 in
+                --domain-id) [ $# -ge 2 ] || { echo -e "${RED}Missing value for --domain-id${NC}"; exit 1; }; DOM_ID="$2"; shift 2 ;;
+                --production) DOM_PRODUCTION="--production"; shift ;;
+                *) echo "Unknown option: $1"; exit 1 ;;
+            esac
+        done
+        [ -n "${DOM_ID}" ] || { echo -e "${RED}--domain-id is required${NC}"; exit 1; }
+        with_registry_lock set_user_domain "${DOM_USER}" "${DOM_ID}" "${DOM_PRODUCTION}"
+        exit 0
+        ;;
     unregister)
+        require_registry_admin
         [ $# -lt 2 ] && { echo -e "${RED}Usage: nwctl unregister <username> [--keep-workspace]${NC}"; exit 1; }
         UNR_USER="$2"; shift 2
         if ! validate_username "${UNR_USER}"; then
@@ -636,7 +689,7 @@ fi
 # Verify user is registered
 DOMAIN_ID=$(get_domain_id "${USERNAME}")
 if [ -z "${DOMAIN_ID}" ]; then
-    echo -e "${RED}User '${USERNAME}' is not registered. Run: nwctl register ${USERNAME} --src <path>${NC}"
+    echo -e "${RED}User '${USERNAME}' is not registered. Ask an administrator to run: sudo nwctl register ${USERNAME} --src <path>${NC}"
     exit 1
 fi
 
