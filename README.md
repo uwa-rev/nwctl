@@ -2,6 +2,9 @@
 
 Multi-user development and testing toolkit for Autoware. Multiple team members can work on the same host machine with fully isolated environments.
 
+Team onboarding and vehicle-test workflow (Chinese):
+[docs/team-development-tutorial-zh.md](docs/team-development-tutorial-zh.md)
+
 ## Architecture
 
 ```
