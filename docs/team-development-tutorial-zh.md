@@ -4,7 +4,8 @@
 
 ## 1. 基本原则
 
-- 每位成员使用独立 Linux 账号、源码目录和 nwctl 目标。
+- 安全要求较高时，每位成员使用独立 Linux 账号；受信任的小团队也可以使用共享 `dev` 实车测试账号。
+- 无论采用哪种 Linux 账号模式，不同源码版本都应使用可追溯的目录、分支和构建记录。
 - 每个源码版本使用独立目标，不复用其他架构或版本的 build/install。
 - 日常开发不得使用车辆 DOMAIN。
 - 车辆 DOMAIN 只运行审核后、可追溯、可回滚的固定提交或构建产物。
@@ -27,6 +28,8 @@ DOMAIN 规划：
 ```
 
 ## 2. 管理员准备 Linux 账号
+
+### 2.1 独立账号模式（推荐）
 
 为每位成员创建独立账号：
 
@@ -51,6 +54,60 @@ sudo usermod -aG plugdev alice
 ```
 
 成员需要注销并重新登录，组权限才会生效。
+
+独立账号的优势是操作日志、文件所有权、SSH key 和 Git 凭据可以追溯到个人。
+
+### 2.2 共享 dev 账号模式（受信任团队）
+
+如果车辆主机只供受信任的内部成员做排期实车测试，可以保留一个共享
+`dev` Linux 账号。管理员只需一次性创建一个车辆测试目标：
+
+```bash
+sudo nwctl register vehicle_dev \
+  --src /home/dev/autoware-vehicle-test/src
+
+sudo nwctl set-domain vehicle_dev \
+  --domain-id 5 \
+  --production
+```
+
+`dev` 账号属于 docker 组时，成员仍可自行启动这个已经注册的目标：
+
+```bash
+nwctl vehicle_dev shell --profile cpu
+```
+
+v0.2.2 要求 sudo 的只是 `register`、`update`、`set-domain` 和
+`unregister`，启动已注册容器不要求 sudo。
+
+共享账号的限制：
+
+- 所有成员拥有相同的主机和 Docker 权限，不能形成成员之间的安全隔离；
+- Git 凭据和 shell history 不应共用，推荐成员使用自己的 SSH 登录身份或跳板审计；
+- 同一时间只允许一个车辆测试容器使用车辆 DOMAIN；
+- 切换分支前必须停止上一测试、记录 SHA，并处理旧 build/install；
+- 车辆测试必须使用排期锁或书面测试记录，避免两人同时切换代码。
+
+推荐共享车辆工作目录只保留一个当前测试分支：
+
+```bash
+cd /home/dev/autoware-vehicle-test
+git fetch origin
+git switch feature/alice-lane-change
+git reset --hard origin/feature/alice-lane-change
+git rev-parse HEAD
+```
+
+其中 `git reset --hard` 只能在确认该目录没有未提交工作后由测试流程执行；
+个人开发内容应先推送到远端 feature 分支。
+
+分支差异较大时，应清理或使用分支专属构建目录，避免旧产物污染：
+
+```bash
+nwctl vehicle_dev clean
+```
+
+该操作会删除构建缓存，执行前应确认车辆测试容器已停止。
 
 ## 3. 成员准备源码
 
