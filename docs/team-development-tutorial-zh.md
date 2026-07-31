@@ -217,8 +217,7 @@ nwctl alice_main planning-sim \
 
 nwctl alice_main rosbag-replay \
   --profile cpu \
-  --map-name sample-map-rosbag \
-  --bag sample-rosbag
+  --map-name sample-map-rosbag
 ```
 
 完成以下检查后再提交：

@@ -6,8 +6,9 @@ Member quick starts:
 [English](docs/member-quick-start-en.md) |
 [English / 中文](docs/member-quick-start-bilingual.md)
 
-Team onboarding and vehicle-test workflow (Chinese):
-[docs/team-development-tutorial-zh.md](docs/team-development-tutorial-zh.md)
+Team onboarding and vehicle-test workflow:
+[English](docs/team-development-tutorial-en.md) |
+[中文](docs/team-development-tutorial-zh.md)
 
 ## Architecture
 
