@@ -571,13 +571,21 @@ case "${1:-}" in
         ;;
 esac
 
+# Reject system-registry mutations before workspace initialization. This keeps
+# the administrator error clear even on a host where /var/lib/nwctl has not
+# been installed yet.
+case "$1" in
+    register|update|set-domain|unregister)
+        require_registry_admin
+        ;;
+esac
+
 # All remaining commands need workspace init
 init_workspace
 
 # Handle commands
 case "$1" in
     register)
-        require_registry_admin
         [ $# -lt 2 ] && { echo -e "${RED}Usage: nwctl register <username> --src <src_path>${NC}"; exit 1; }
         REG_USER="$2"; shift 2; REG_SRC=""
         while [[ $# -gt 0 ]]; do
@@ -590,7 +598,6 @@ case "$1" in
         exit 0
         ;;
     update)
-        require_registry_admin
         [ $# -lt 2 ] && { echo -e "${RED}Usage: nwctl update <username> --src <new_path>${NC}"; exit 1; }
         UPD_USER="$2"; shift 2; UPD_SRC=""
         while [[ $# -gt 0 ]]; do
@@ -618,7 +625,6 @@ case "$1" in
         exit 0
         ;;
     set-domain)
-        require_registry_admin
         [ $# -lt 2 ] && { echo -e "${RED}Usage: nwctl set-domain <username> --domain-id <0-232> [--production]${NC}"; exit 1; }
         DOM_USER="$2"; shift 2; DOM_ID=""; DOM_PRODUCTION=""
         while [[ $# -gt 0 ]]; do
@@ -633,7 +639,6 @@ case "$1" in
         exit 0
         ;;
     unregister)
-        require_registry_admin
         [ $# -lt 2 ] && { echo -e "${RED}Usage: nwctl unregister <username> [--keep-workspace]${NC}"; exit 1; }
         UNR_USER="$2"; shift 2
         if ! validate_username "${UNR_USER}"; then
