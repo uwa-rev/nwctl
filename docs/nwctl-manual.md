@@ -1,6 +1,6 @@
 # nwctl 使用手册
 
-**Nuway Autoware Container Manager** — 多用户 Autoware Docker 测试与开发工具包
+**Nuway Autoware Command Toolkit** — 多用户 Autoware Docker 测试与开发工具包
 
 ---
 
@@ -313,4 +313,4 @@ nwctl check-env
 
 ---
 
-*nwctl v0.2.1 — Nuway Autoware Team*
+*NWCTL v0.2.2 — Nuway Autoware Team*

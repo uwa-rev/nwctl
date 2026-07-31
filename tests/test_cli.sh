@@ -55,6 +55,10 @@ export PATH="${FAKE_BIN}:${ROOT}:${PATH}"
 export DOCKER_LOG ENTRY_COPY
 mkdir -p "${SHARED_MAP_PATH}/sample-map-rosbag" \
          "${SHARED_ROSBAG_PATH}/run-a" "${SHARED_DATA_PATH}"
+cat > "${SHARED_ROSBAG_PATH}/run-a/metadata.yaml" <<'EOF'
+rosbag2_bagfile_information:
+  storage_identifier: sqlite3
+EOF
 
 run_nwctl() {
     bash "${ROOT}/nwctl" "$@"
@@ -70,7 +74,7 @@ assert_contains() {
 }
 
 run_nwctl version | grep -q 'nwctl v0.2.2'
-run_nwctl help | grep -F 'Nuway Autoware Container Manager' >/dev/null
+run_nwctl help | grep -F 'Nuway Autoware Command Toolkit' >/dev/null
 if NWCTL_STATE_DIR=/var/lib/nwctl run_nwctl register blocked \
     --src "${SOURCE_ROOT}/src" >"${TEST_ROOT}/admin-denied.log" 2>&1; then
     echo "FAIL: unprivileged system registry mutation was accepted" >&2
@@ -96,6 +100,11 @@ fi
 
 if run_nwctl alice rosbag-replay --bag ../../ >/dev/null 2>&1; then
     echo "FAIL: rosbag path traversal was accepted" >&2
+    exit 1
+fi
+mkdir -p "${SHARED_ROSBAG_PATH}/missing-metadata"
+if run_nwctl alice rosbag-replay --bag missing-metadata >/dev/null 2>&1; then
+    echo "FAIL: rosbag directory without metadata.yaml was accepted" >&2
     exit 1
 fi
 
@@ -127,7 +136,7 @@ assert_contains "${DOCKER_LOG}" "NVIDIA_DRIVER_CAPABILITIES=all"
 : > "${DOCKER_LOG}"
 NWCTL_ROSBAG_START_DELAY=0 run_nwctl alice rosbag-replay --bag run-a --rate 2.0 >/dev/null
 assert_contains "${DOCKER_LOG}" "${SHARED_ROSBAG_PATH}/run-a:/rosbag_data:ro"
-assert_contains "${ENTRY_COPY}" "ros2 bag play /rosbag_data -r 2.0"
+assert_contains "${ENTRY_COPY}" "ros2 bag play /rosbag_data -r 2.0 -s sqlite3"
 assert_contains "${ENTRY_COPY}" "perception:=false"
 assert_contains "${ENTRY_COPY}" "launch_perception:=false"
 assert_contains "${ENTRY_COPY}" "use_cuda_ground_segmentation:=false"

@@ -1,6 +1,10 @@
-# nwctl - Nuway Autoware Container Manager
+# NWCTL — Nuway Autoware Command Toolkit
 
 Multi-user development and testing toolkit for Autoware. Multiple team members can work on the same host machine with fully isolated environments.
+
+Member quick starts:
+[English](docs/member-quick-start-en.md) |
+[English / 中文](docs/member-quick-start-bilingual.md)
 
 Team onboarding and vehicle-test workflow (Chinese):
 [docs/team-development-tutorial-zh.md](docs/team-development-tutorial-zh.md)
@@ -236,8 +240,8 @@ nwctl status                   # Show running containers
 nwctl disk                     # Show disk usage per user
 nwctl <username> stop          # Stop user's containers
 nwctl <username> clean         # Clean user's build cache
-nwctl update <username> --src <path>  # Update source path
-nwctl unregister <username> --keep-workspace
+sudo nwctl update <username> --src <path>  # Update source path
+sudo nwctl unregister <username> --keep-workspace
 nwctl cleanup --dry-run
 nwctl pull
 ```

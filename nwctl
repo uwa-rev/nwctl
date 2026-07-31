@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# nwctl - Nuway Autoware Container Manager
+# NWCTL - Nuway Autoware Command Toolkit
 #
 # Usage:
 #   sudo nwctl register <username> --src <src_path>  Register a new target
@@ -173,10 +173,15 @@ register_user() {
     local domain_id
     domain_id=$(next_domain_id)
 
-    # Create user workspace (build/install/log only)
-    local user_ws="${USER_WORKSPACES_ROOT}/${username}"
+    # Create the build workspace for the owner of the registered source tree.
+    # Registration runs as root for system installs, while development
+    # containers run with the member's host UID/GID.
+    local user_ws="${USER_WORKSPACES_ROOT}/${username}" workspace_uid workspace_gid
+    workspace_uid=$(stat -c %u "${src_path}")
+    workspace_gid=$(stat -c %g "${src_path}")
     mkdir -p "${user_ws}/build" "${user_ws}/install" "${user_ws}/log"
-    chmod -R g+rwX "${user_ws}" 2>/dev/null || true
+    chown -R "${workspace_uid}:${workspace_gid}" "${user_ws}"
+    chmod -R u+rwX,g+rwX "${user_ws}"
 
     # Write to registry: username:domain_id:src_path
     echo "${username}:${domain_id}:${src_path}" >> "${USER_REGISTRY}"
@@ -450,7 +455,7 @@ show_disk_usage() {
 
 print_help() {
     echo ""
-    echo -e "${GREEN}nwctl${NC} - Nuway Autoware Container Manager (v${NWCTL_VERSION})"
+    echo -e "${GREEN}NWCTL${NC} - Nuway Autoware Command Toolkit (v${NWCTL_VERSION})"
     echo ""
     echo "Usage:"
     echo "  sudo nwctl register <username> --src <src_path>  Register with an auto-assigned dev DOMAIN"
@@ -800,6 +805,27 @@ if [ "${MODE}" = "rosbag-replay" ] && [ ! -d "${ROSBAG_PATH}" ]; then
     echo -e "${RED}Rosbag directory does not exist: ${ROSBAG_PATH}${NC}"
     exit 1
 fi
+ROSBAG_STORAGE_ID=""
+if [ "${MODE}" = "rosbag-replay" ]; then
+    ROSBAG_METADATA="${ROSBAG_PATH}/metadata.yaml"
+    if [ ! -r "${ROSBAG_METADATA}" ]; then
+        echo -e "${RED}Rosbag metadata does not exist or is not readable: ${ROSBAG_METADATA}${NC}"
+        echo "Set --rosbag-path to the directory that directly contains metadata.yaml."
+        exit 1
+    fi
+    ROSBAG_STORAGE_ID=$(awk -F: '
+        /^[[:space:]]*storage_identifier:/ {
+            sub(/^[^:]*:[[:space:]]*/, "")
+            gsub(/[[:space:]\"\047]/, "")
+            print
+            exit
+        }
+    ' "${ROSBAG_METADATA}")
+    if ! [[ "${ROSBAG_STORAGE_ID}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        echo -e "${RED}Invalid or missing storage_identifier in ${ROSBAG_METADATA}${NC}"
+        exit 1
+    fi
+fi
 
 # ---- Detect DISPLAY ----
 if [ -z "${DISPLAY:-}" ]; then
@@ -954,7 +980,7 @@ if ! kill -0 "\${launch_pid}" 2>/dev/null; then
     wait "\${launch_pid}"
     exit \$?
 fi
-ros2 bag play /rosbag_data -r ${PLAY_RATE}
+ros2 bag play /rosbag_data -r ${PLAY_RATE} -s ${ROSBAG_STORAGE_ID}
 wait "\${launch_pid}"
 ENTRY_EOF
         ;;
@@ -1000,16 +1026,10 @@ if [ "${MODE}" = "planning-sim" ]; then
 fi
 
 if [ "${MODE}" = "rosbag-replay" ]; then
-    echo " Rosbag replay steps:"
-    echo "   1. Wait for Autoware to start, confirm pointcloud map is loaded in rviz"
-    echo "   2. Click '2D Pose Estimate' in rviz to set initial vehicle pose"
-    echo "   3. Open another terminal:"
-    echo "      docker exec -it ${CONTAINER_NAME} bash"
-    echo "   4. Inside the container:"
-    echo "      source /opt/autoware/setup.bash"
-    echo "      export ROS_DOMAIN_ID=${DOMAIN_ID}"
-    echo "      ros2 bag play /rosbag_data -r ${PLAY_RATE} -s sqlite3"
-    echo "   5. In rviz Views panel, set Target Frame to 'base_link' to follow the vehicle"
+    echo " Rosbag replay:"
+    echo "   Storage: ${ROSBAG_STORAGE_ID}"
+    echo "   Playback starts automatically after Autoware initialization."
+    echo "   In rviz Views, set Target Frame to 'base_link' to follow the vehicle."
     echo ""
 fi
 

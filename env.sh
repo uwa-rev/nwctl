@@ -61,7 +61,7 @@ nwctl_resolve_profile() {
 # Shared data paths (read-only)
 SHARED_MAP_PATH="${SHARED_MAP_PATH:-${HOME}/autoware_map}"
 SHARED_DATA_PATH="${SHARED_DATA_PATH:-${HOME}/autoware_data}"
-SHARED_ROSBAG_PATH="${SHARED_ROSBAG_PATH:-${HOME}/autoware_map/sample-rosbag}"
+SHARED_ROSBAG_PATH="${SHARED_ROSBAG_PATH:-${HOME}/autoware_rosbag/sample-rosbag}"
 SHARED_SRC_PATH="${SHARED_SRC_PATH:-${HOME}/autoware/src}"
 
 # Runtime state. The system registry under /var/lib/nwctl is root-managed.

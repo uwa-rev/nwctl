@@ -89,7 +89,7 @@ jobs:
 
             ### Quick Start
             ```bash
-            nwctl register <username> --src /path/to/your/autoware/src
+            sudo nwctl register <username> --src /path/to/your/autoware/src
             nwctl <username> planning-sim
             nwctl <username> rosbag-replay
             nwctl <username> shell

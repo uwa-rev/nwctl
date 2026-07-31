@@ -8,7 +8,7 @@ AUTOWARE_IMAGE="${AUTOWARE_IMAGE:-ghcr.io/autowarefoundation/autoware:universe-d
 WORKSPACE_PATH="${WORKSPACE_PATH:-${HOME}/autoware}"
 MAP_PATH="${MAP_PATH:-${HOME}/autoware_map}"
 DATA_PATH="${DATA_PATH:-${HOME}/autoware_data}"
-ROSBAG_PATH="${ROSBAG_PATH:-${HOME}/autoware_map/sample-rosbag}"
+ROSBAG_PATH="${ROSBAG_PATH:-${HOME}/autoware_rosbag/sample-rosbag}"
 CONTAINER_NAME="aw-test-manual"
 
 # Detect DISPLAY
